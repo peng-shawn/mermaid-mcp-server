@@ -17,11 +17,22 @@ import {
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url));
 
 function log(level: string, message: string) {
+  // Map browser level to info for MCP logging
+  const mcpLevel = level === "browser" ? "info" : level as "error" | "info" | "debug" | "warning" | "critical" | "emergency";
+  
   server.sendLoggingMessage({
-    level: level as "error" | "info" | "debug" | "warning" | "critical" | "emergency",
+    level: mcpLevel,
     data: message
   });
-  console.error(`${level} - ${message}`);
+  
+  // Use different console methods based on level
+  if (level === "error") {
+    console.error(`${level} - ${message}`);
+  } else if (level === "browser") {
+    console.log(`browser - ${message}`);
+  } else {
+    console.log(`${level} - ${message}`);
+  }
 }
 
 // Define tools
@@ -35,6 +46,15 @@ const GENERATE_TOOL: Tool = {
         type: "string",
         description: "The mermaid markdown to generate an image from"
       },
+      theme: {
+        type: "string",
+        enum: ["default", "forest", "dark", "neutral"],
+        description: "Theme for the diagram (optional)"
+      },
+      backgroundColor: {
+        type: "string",
+        description: "Background color for the diagram, e.g. 'white', 'transparent', '#F0F0F0' (optional)"
+      }
     },
     required: ["code"]
   }
@@ -56,11 +76,23 @@ const server = new Server(
 
 function isGenerateArgs(args: unknown): args is {
   code: string;
+  theme?: 'default' | 'forest' | 'dark' | 'neutral';
+  backgroundColor?: string;
 } {
-  return typeof args === "object" && args !== null && "code" in args;
+  return (
+    typeof args === 'object' &&
+    args !== null &&
+    'code' in args &&
+    typeof (args as any).code === 'string' &&
+    (!(args as any).theme || ['default', 'forest', 'dark', 'neutral'].includes((args as any).theme)) &&
+    (!(args as any).backgroundColor || typeof (args as any).backgroundColor === 'string')
+  );
 }
 
-async function renderMermaidPng(code: string): Promise<string> {
+async function renderMermaidPng(code: string, config: {
+  theme?: 'default' | 'forest' | 'dark' | 'neutral';
+  backgroundColor?: string;
+} = {}): Promise<string> {
   log("info", "Launching Puppeteer");
   
   // Resolve the path to the local mermaid.js file
@@ -71,8 +103,20 @@ async function renderMermaidPng(code: string): Promise<string> {
     headless: true,
   });
   
+  // Declare page outside try block so it's accessible in catch and finally
+  let page: puppeteer.Page | null = null;
+  // Store console messages for error reporting
+  const consoleMessages: string[] = [];
+  
   try {
-    const page = await browser.newPage();
+    page = await browser.newPage();
+    
+    // Capture browser console messages for better error reporting
+    page.on('console', (msg) => {
+      const text = msg.text();
+      consoleMessages.push(text);
+      log("browser", text);
+    });
     
     // Create a simple HTML template without the CDN reference
     const htmlContent = `
@@ -82,7 +126,7 @@ async function renderMermaidPng(code: string): Promise<string> {
       <title>Mermaid Renderer</title>
       <style>
         body { 
-          background: white;
+          background: ${config.backgroundColor || 'white'};
           margin: 0;
           padding: 0;
         }
@@ -93,9 +137,7 @@ async function renderMermaidPng(code: string): Promise<string> {
       </style>
     </head>
     <body>
-      <div id="container" class="mermaid">
-        ${code}
-      </div>
+      <div id="container"></div>
     </body>
     </html>
     `;
@@ -112,36 +154,59 @@ async function renderMermaidPng(code: string): Promise<string> {
     // Add the mermaid script to the page
     await page.addScriptTag({ path: mermaidPath });
     
-    // Initialize mermaid
-    await page.evaluate(() => {
-      // @ts-ignore - mermaid is loaded by the script tag
-      window.mermaid.initialize({
-        startOnLoad: true,
-        theme: 'default',
-        securityLevel: 'loose',
-        logLevel: 5
-      });
-      // @ts-ignore - mermaid is loaded by the script tag
-      window.mermaid.init(undefined, document.querySelector('.mermaid'));
-    });
+    // Render the mermaid diagram using a more robust approach similar to the CLI
+    const screenshot = await page.$eval('#container', async (container, mermaidCode, mermaidConfig) => {
+      try {
+        // @ts-ignore - mermaid is loaded by the script tag
+        window.mermaid.initialize({
+          startOnLoad: false,
+          theme: mermaidConfig.theme || 'default',
+          securityLevel: 'loose',
+          logLevel: 5
+        });
+        
+        // This will throw an error if the mermaid syntax is invalid
+        // @ts-ignore - mermaid is loaded by the script tag
+        const { svg: svgText } = await window.mermaid.render('mermaid-svg', mermaidCode, container);
+        container.innerHTML = svgText;
+        
+        const svg = container.querySelector('svg');
+        if (!svg) {
+          throw new Error('SVG element not found after rendering');
+        }
+        
+        // Apply any necessary styling to the SVG
+        svg.style.backgroundColor = mermaidConfig.backgroundColor || 'white';
+        
+        // Return the dimensions for screenshot
+        const rect = svg.getBoundingClientRect();
+        return {
+          width: Math.ceil(rect.width),
+          height: Math.ceil(rect.height),
+          success: true
+        };
+      } catch (error) {
+        // Return the error to be handled outside
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }, code, { theme: config.theme, backgroundColor: config.backgroundColor });
     
-    // Wait for mermaid to render
-    await page.waitForSelector('.mermaid svg');
+    // Check if rendering was successful
+    if (!screenshot.success) {
+      throw new Error(`Mermaid rendering failed: ${screenshot.error}`);
+    }
     
-    // Get the SVG element
-    const svgElement = await page.$('.mermaid svg');
+    // Take a screenshot of the SVG
+    const svgElement = await page.$('#container svg');
     if (!svgElement) {
       throw new Error('SVG element not found');
     }
     
-    // Get the bounding box of the SVG
-    const boundingBox = await svgElement.boundingBox();
-    if (!boundingBox) {
-      throw new Error('Could not get SVG bounding box');
-    }
-    
-    // Take a screenshot of just the SVG
-    const screenshot = await svgElement.screenshot({
+    // Take a screenshot with the correct dimensions
+    const base64Image = await svgElement.screenshot({
       omitBackground: false,
       type: 'png',
       encoding: 'base64'
@@ -152,10 +217,17 @@ async function renderMermaidPng(code: string): Promise<string> {
     
     log("info", "Mermaid rendered successfully");
     
-    return screenshot;
+    return base64Image;
   } catch (error) {
     log("error", `Error in renderMermaidPng: ${error instanceof Error ? error.message : String(error)}`);
     log("error", `Error stack: ${error instanceof Error ? error.stack : 'No stack trace'}`);
+    
+    // Include console messages in the error for better debugging
+    if (page && page.isClosed() === false) {
+      log("error", "Browser console messages:");
+      consoleMessages.forEach(msg => log("error", `  ${msg}`));
+    }
+    
     throw error;
   } finally {
     await browser.close();
@@ -183,21 +255,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!isGenerateArgs(args)) {
         throw new Error("Invalid arguments for generate");
       }
-      const base64Image = await renderMermaidPng(args.code);
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Here is the generated image",
-          },
-          {
-            type: "image",
-            data: base64Image,
-            mimeType: "image/png",
-          },
-        ],
-        isError: false,
-      };
+      
+      try {
+        const base64Image = await renderMermaidPng(args.code, {
+          theme: args.theme,
+          backgroundColor: args.backgroundColor
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Here is the generated image",
+            },
+            {
+              type: "image",
+              data: base64Image,
+              mimeType: "image/png",
+            },
+          ],
+          isError: false,
+        };
+      } catch (error) {
+        // Specific handling for Mermaid syntax errors
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const isSyntaxError = errorMessage.includes("Syntax error") || 
+                             errorMessage.includes("Parse error") || 
+                             errorMessage.includes("Mermaid rendering failed");
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: isSyntaxError 
+                ? `Mermaid syntax error: ${errorMessage}\n\nPlease check your diagram syntax.` 
+                : `Error generating diagram: ${errorMessage}`,
+            }
+          ],
+          isError: true,
+        };
+      }
     }
 
     return {
