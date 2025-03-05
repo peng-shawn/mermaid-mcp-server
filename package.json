@@ -14,6 +14,7 @@
   "description": "",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",
+    "import-meta-resolve": "^4.1.0",
     "mermaid": "^11.4.1",
     "puppeteer": "^24.3.1"
   },

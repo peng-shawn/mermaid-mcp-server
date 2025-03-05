@@ -4,6 +4,7 @@ import puppeteer from 'puppeteer';
 import path from 'path';
 import url from 'url';
 import fs from 'fs';
+import { resolve } from 'import-meta-resolve';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -62,6 +63,10 @@ function isGenerateArgs(args: unknown): args is {
 async function renderMermaidPng(code: string): Promise<string> {
   log("info", "Launching Puppeteer");
   
+  // Resolve the path to the local mermaid.js file
+  const distPath = path.dirname(url.fileURLToPath(resolve('mermaid', import.meta.url)));
+  const mermaidPath = path.resolve(distPath, 'mermaid.min.js');
+
   const browser = await puppeteer.launch({
     headless: true,
   });
@@ -69,13 +74,12 @@ async function renderMermaidPng(code: string): Promise<string> {
   try {
     const page = await browser.newPage();
     
-    // Create a simple HTML template with mermaid
+    // Create a simple HTML template without the CDN reference
     const htmlContent = `
     <!DOCTYPE html>
     <html>
     <head>
       <title>Mermaid Renderer</title>
-      <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
       <style>
         body { 
           background: white;
@@ -92,14 +96,6 @@ async function renderMermaidPng(code: string): Promise<string> {
       <div id="container" class="mermaid">
         ${code}
       </div>
-      <script>
-        mermaid.initialize({
-          startOnLoad: true,
-          theme: 'default',
-          securityLevel: 'loose',
-          logLevel: 5
-        });
-      </script>
     </body>
     </html>
     `;
@@ -112,6 +108,22 @@ async function renderMermaidPng(code: string): Promise<string> {
     
     // Navigate to the HTML file
     await page.goto(`file://${tempHtmlPath}`);
+    
+    // Add the mermaid script to the page
+    await page.addScriptTag({ path: mermaidPath });
+    
+    // Initialize mermaid
+    await page.evaluate(() => {
+      // @ts-ignore - mermaid is loaded by the script tag
+      window.mermaid.initialize({
+        startOnLoad: true,
+        theme: 'default',
+        securityLevel: 'loose',
+        logLevel: 5
+      });
+      // @ts-ignore - mermaid is loaded by the script tag
+      window.mermaid.init(undefined, document.querySelector('.mermaid'));
+    });
     
     // Wait for mermaid to render
     await page.waitForSelector('.mermaid svg');
