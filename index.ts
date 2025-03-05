@@ -13,25 +13,70 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
+/**
+ * Mermaid MCP Server
+ * 
+ * This server provides a tool to render Mermaid diagrams as PNG images.
+ * 
+ * Environment Variables:
+ * - MERMAID_LOG_VERBOSITY: Controls the verbosity of logging (default: 2)
+ *   0 = EMERGENCY - Only the most critical errors
+ *   1 = CRITICAL - Critical errors that require immediate attention
+ *   2 = ERROR - Error conditions (default)
+ *   3 = WARNING - Warning conditions
+ *   4 = INFO - Informational messages
+ *   5 = DEBUG - Debug-level messages
+ * 
+ * Example:
+ *   MERMAID_LOG_VERBOSITY=2 node index.js  # Only show ERROR and more severe logs (default)
+ *   MERMAID_LOG_VERBOSITY=4 node index.js  # Show INFO and more severe logs
+ *   MERMAID_LOG_VERBOSITY=5 node index.js  # Show DEBUG and more severe logs
+ */
+
 // __dirname is not available in ESM modules by default
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url));
 
-function log(level: string, message: string) {
-  // Map browser level to info for MCP logging
-  const mcpLevel = level === "browser" ? "info" : level as "error" | "info" | "debug" | "warning" | "critical" | "emergency";
-  
-  server.sendLoggingMessage({
-    level: mcpLevel,
-    data: message
-  });
-  
-  // Use different console methods based on level
-  if (level === "error") {
-    console.error(`${level} - ${message}`);
-  } else if (level === "browser") {
-    console.log(`browser - ${message}`);
-  } else {
-    console.log(`${level} - ${message}`);
+// Define log levels with numeric values for comparison
+enum LogLevel {
+  EMERGENCY = 0,
+  CRITICAL = 1,
+  ERROR = 2,
+  WARNING = 3,
+  INFO = 4,
+  DEBUG = 5,
+}
+
+// Get verbosity level from environment variable, default to ERROR (2)
+const LOG_VERBOSITY = process.env.MERMAID_LOG_VERBOSITY 
+  ? parseInt(process.env.MERMAID_LOG_VERBOSITY, 10) 
+  : LogLevel.ERROR;
+
+// Convert LogLevel to MCP log level string
+function getMcpLogLevel(level: LogLevel): "error" | "info" | "debug" | "warning" | "critical" | "emergency" {
+  switch (level) {
+    case LogLevel.EMERGENCY: return "emergency";
+    case LogLevel.CRITICAL: return "critical";
+    case LogLevel.ERROR: return "error";
+    case LogLevel.WARNING: return "warning";
+    case LogLevel.DEBUG: return "debug";
+    case LogLevel.INFO: 
+    default: return "info";
+  }
+}
+
+function log(level: LogLevel, message: string) {
+  // Only log if the current level is less than or equal to the verbosity setting
+  if (level <= LOG_VERBOSITY) {
+    // Get the appropriate MCP log level
+    const mcpLevel = getMcpLogLevel(level);
+    
+    server.sendLoggingMessage({
+      level: mcpLevel,
+      data: message
+    });
+    
+    // Only console.error is consumed by MCP inspector
+    console.error(`${LogLevel[level]} - ${message}`);
   }
 }
 
@@ -71,7 +116,7 @@ const server = new Server(
       tools: {},
       logging: {}
     },
-  },
+  }
 );
 
 function isGenerateArgs(args: unknown): args is {
@@ -93,11 +138,13 @@ async function renderMermaidPng(code: string, config: {
   theme?: 'default' | 'forest' | 'dark' | 'neutral';
   backgroundColor?: string;
 } = {}): Promise<string> {
-  log("info", "Launching Puppeteer");
+  log(LogLevel.INFO, "Launching Puppeteer");
+  log(LogLevel.DEBUG, `Rendering with config: ${JSON.stringify(config)}`);
   
   // Resolve the path to the local mermaid.js file
   const distPath = path.dirname(url.fileURLToPath(resolve('mermaid', import.meta.url)));
   const mermaidPath = path.resolve(distPath, 'mermaid.min.js');
+  log(LogLevel.DEBUG, `Using Mermaid from: ${mermaidPath}`);
 
   const browser = await puppeteer.launch({
     headless: true,
@@ -110,12 +157,13 @@ async function renderMermaidPng(code: string, config: {
   
   try {
     page = await browser.newPage();
+    log(LogLevel.DEBUG, "Browser page created");
     
     // Capture browser console messages for better error reporting
     page.on('console', (msg) => {
       const text = msg.text();
       consoleMessages.push(text);
-      log("browser", text);
+      log(LogLevel.DEBUG, text);
     });
     
     // Create a simple HTML template without the CDN reference
@@ -146,15 +194,19 @@ async function renderMermaidPng(code: string, config: {
     const tempHtmlPath = path.join(__dirname, 'temp-mermaid.html');
     fs.writeFileSync(tempHtmlPath, htmlContent);
     
-    log("info", `Rendering mermaid code: ${code.substring(0, 50)}...`);
+    log(LogLevel.INFO, `Rendering mermaid code: ${code.substring(0, 50)}...`);
+    log(LogLevel.DEBUG, `Full mermaid code: ${code}`);
     
     // Navigate to the HTML file
     await page.goto(`file://${tempHtmlPath}`);
+    log(LogLevel.DEBUG, "Navigated to HTML template");
     
     // Add the mermaid script to the page
     await page.addScriptTag({ path: mermaidPath });
+    log(LogLevel.DEBUG, "Added Mermaid script to page");
     
     // Render the mermaid diagram using a more robust approach similar to the CLI
+    log(LogLevel.DEBUG, "Starting Mermaid rendering in browser");
     const screenshot = await page.$eval('#container', async (container, mermaidCode, mermaidConfig) => {
       try {
         // @ts-ignore - mermaid is loaded by the script tag
@@ -196,15 +248,20 @@ async function renderMermaidPng(code: string, config: {
     
     // Check if rendering was successful
     if (!screenshot.success) {
+      log(LogLevel.ERROR, `Mermaid rendering failed in browser: ${screenshot.error}`);
       throw new Error(`Mermaid rendering failed: ${screenshot.error}`);
     }
+    
+    log(LogLevel.DEBUG, "Mermaid rendered successfully in browser");
     
     // Take a screenshot of the SVG
     const svgElement = await page.$('#container svg');
     if (!svgElement) {
+      log(LogLevel.ERROR, "SVG element not found after successful rendering");
       throw new Error('SVG element not found');
     }
     
+    log(LogLevel.DEBUG, "Taking screenshot of SVG");
     // Take a screenshot with the correct dimensions
     const base64Image = await svgElement.screenshot({
       omitBackground: false,
@@ -214,24 +271,25 @@ async function renderMermaidPng(code: string, config: {
     
     // Clean up the temporary file
     fs.unlinkSync(tempHtmlPath);
+    log(LogLevel.DEBUG, "Temporary HTML file cleaned up");
     
-    log("info", "Mermaid rendered successfully");
+    log(LogLevel.INFO, "Mermaid rendered successfully");
     
     return base64Image;
   } catch (error) {
-    log("error", `Error in renderMermaidPng: ${error instanceof Error ? error.message : String(error)}`);
-    log("error", `Error stack: ${error instanceof Error ? error.stack : 'No stack trace'}`);
+    log(LogLevel.ERROR, `Error in renderMermaidPng: ${error instanceof Error ? error.message : String(error)}`);
+    log(LogLevel.ERROR, `Error stack: ${error instanceof Error ? error.stack : 'No stack trace'}`);
     
     // Include console messages in the error for better debugging
     if (page && page.isClosed() === false) {
-      log("error", "Browser console messages:");
-      consoleMessages.forEach(msg => log("error", `  ${msg}`));
+      log(LogLevel.ERROR, "Browser console messages:");
+      consoleMessages.forEach(msg => log(LogLevel.ERROR, `  ${msg}`));
     }
     
     throw error;
   } finally {
     await browser.close();
-    log("info", "Puppeteer browser closed");
+    log(LogLevel.DEBUG, "Puppeteer browser closed");
   }
 }
 
@@ -248,10 +306,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new Error("No arguments provided");
     }
 
-    log("info", `Received request: ${name} with args: ${JSON.stringify(args)}`);
+    log(LogLevel.INFO, `Received request: ${name} with args: ${JSON.stringify(args)}`);
 
     if (name === "generate") {
-      log("info", "Rendering Mermaid PNG");
+      log(LogLevel.INFO, "Rendering Mermaid PNG");
       if (!isGenerateArgs(args)) {
         throw new Error("Invalid arguments for generate");
       }
@@ -316,10 +374,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function runServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Mermaid MCP Server running on stdio");
+  log(LogLevel.INFO, "Mermaid MCP Server running on stdio");
 }
 
 runServer().catch((error) => {
-  console.error("Fatal error running server:", error);
+  log(LogLevel.CRITICAL, `Fatal error running server: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });
