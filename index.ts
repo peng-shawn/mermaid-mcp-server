@@ -26,11 +26,27 @@ import {
  *   3 = WARNING - Warning conditions
  *   4 = INFO - Informational messages
  *   5 = DEBUG - Debug-level messages
+ * - CONTENT_IMAGE_SUPPORTED: Controls whether images can be returned directly in the response (default: true)
+ *   When set to 'false', the 'name' and 'folder' parameters become mandatory, and all images must be saved to disk.
  * 
  * Example:
  *   MERMAID_LOG_VERBOSITY=2 node index.js  # Only show ERROR and more severe logs (default)
  *   MERMAID_LOG_VERBOSITY=4 node index.js  # Show INFO and more severe logs
  *   MERMAID_LOG_VERBOSITY=5 node index.js  # Show DEBUG and more severe logs
+ *   CONTENT_IMAGE_SUPPORTED=false node index.js  # Require all images to be saved to disk
+ * 
+ * Tool Parameters:
+ * - code: The mermaid markdown to generate an image from (required)
+ * - theme: Theme for the diagram (optional, one of: "default", "forest", "dark", "neutral")
+ * - backgroundColor: Background color for the diagram (optional, e.g., "white", "transparent", "#F0F0F0")
+ * - name: Name for the generated file (required when saving to folder or when CONTENT_IMAGE_SUPPORTED=false)
+ * - folder: Folder path to save the image to (optional, but required when CONTENT_IMAGE_SUPPORTED=false)
+ * 
+ * File Saving Behavior:
+ * - When 'folder' is specified, the image will be saved to disk instead of returned in the response
+ * - The 'name' parameter is required when 'folder' is specified
+ * - If a file with the same name already exists, a timestamp will be appended to the filename
+ * - When CONTENT_IMAGE_SUPPORTED=false, all images must be saved to disk, and 'name' and 'folder' are required
  */
 
 // __dirname is not available in ESM modules by default
@@ -46,10 +62,13 @@ enum LogLevel {
   DEBUG = 5,
 }
 
-// Get verbosity level from environment variable, default to ERROR (2)
+// Get verbosity level from environment variable, default to INFO (4)
 const LOG_VERBOSITY = process.env.MERMAID_LOG_VERBOSITY 
   ? parseInt(process.env.MERMAID_LOG_VERBOSITY, 10) 
   : LogLevel.ERROR;
+
+// Check if content images are supported (default: true)
+const CONTENT_IMAGE_SUPPORTED = process.env.CONTENT_IMAGE_SUPPORTED !== 'false';
 
 // Convert LogLevel to MCP log level string
 function getMcpLogLevel(level: LogLevel): "error" | "info" | "debug" | "warning" | "critical" | "emergency" {
@@ -99,9 +118,17 @@ const GENERATE_TOOL: Tool = {
       backgroundColor: {
         type: "string",
         description: "Background color for the diagram, e.g. 'white', 'transparent', '#F0F0F0' (optional)"
+      },
+      name: {
+        type: "string",
+        description: CONTENT_IMAGE_SUPPORTED ? "Name of the diagram (optional)" : "Name for the generated file (required)"
+      },
+      folder: {
+        type: "string",
+        description: CONTENT_IMAGE_SUPPORTED ? "Absolute path to save the image to (optional)" : "Absolute path to save the image to (required)"
       }
     },
-    required: ["code"]
+    required: CONTENT_IMAGE_SUPPORTED ? ["code"] : ["code", "name", "folder"]
   }
 };
 
@@ -123,6 +150,8 @@ function isGenerateArgs(args: unknown): args is {
   code: string;
   theme?: 'default' | 'forest' | 'dark' | 'neutral';
   backgroundColor?: string;
+  name?: string;
+  folder?: string;
 } {
   return (
     typeof args === 'object' &&
@@ -130,7 +159,9 @@ function isGenerateArgs(args: unknown): args is {
     'code' in args &&
     typeof (args as any).code === 'string' &&
     (!(args as any).theme || ['default', 'forest', 'dark', 'neutral'].includes((args as any).theme)) &&
-    (!(args as any).backgroundColor || typeof (args as any).backgroundColor === 'string')
+    (!(args as any).backgroundColor || typeof (args as any).backgroundColor === 'string') &&
+    (!(args as any).name || typeof (args as any).name === 'string') &&
+    (!(args as any).folder || typeof (args as any).folder === 'string')
   );
 }
 
@@ -293,11 +324,139 @@ async function renderMermaidPng(code: string, config: {
   }
 }
 
+/**
+ * Saves a generated Mermaid diagram to a file
+ * 
+ * @param base64Image - The base64-encoded PNG image
+ * @param name - The name to use for the file (without extension)
+ * @param folder - The folder to save the file in
+ * @returns The full path to the saved file
+ */
+async function saveMermaidImageToFile(base64Image: string, name: string, folder: string): Promise<string> {
+  // Create the folder if it doesn't exist
+  if (!fs.existsSync(folder)) {
+    log(LogLevel.INFO, `Creating folder: ${folder}`);
+    fs.mkdirSync(folder, { recursive: true });
+  }
+  
+  // Generate a filename, adding timestamp if file already exists
+  let filename = `${name}.png`;
+  const filePath = path.join(folder, filename);
+  
+  if (fs.existsSync(filePath)) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    filename = `${name}-${timestamp}.png`;
+    log(LogLevel.INFO, `File already exists, using filename: ${filename}`);
+  }
+  
+  // Save the image to the file
+  const imageBuffer = Buffer.from(base64Image, 'base64');
+  const fullPath = path.join(folder, filename);
+  fs.writeFileSync(fullPath, imageBuffer);
+  
+  log(LogLevel.INFO, `Image saved to: ${fullPath}`);
+  return fullPath;
+}
+
+/**
+ * Handles Mermaid syntax errors and other errors
+ * 
+ * @param error - The error that occurred
+ * @returns A response object with the error message
+ */
+function handleMermaidError(error: unknown): { 
+  content: Array<{ type: "text"; text: string }>, 
+  isError: boolean 
+} {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const isSyntaxError = errorMessage.includes("Syntax error") || 
+                        errorMessage.includes("Parse error") || 
+                        errorMessage.includes("Mermaid rendering failed");
+  
+  return {
+    content: [
+      {
+        type: "text",
+        text: isSyntaxError 
+          ? `Mermaid syntax error: ${errorMessage}\n\nPlease check your diagram syntax.` 
+          : `Error generating diagram: ${errorMessage}`,
+      }
+    ],
+    isError: true,
+  };
+}
+
+/**
+ * Processes a generate request to create a Mermaid diagram
+ * 
+ * @param args - The arguments for the generate request
+ * @returns A response object with the generated image or file path
+ */
+async function processGenerateRequest(args: {
+  code: string;
+  theme?: 'default' | 'forest' | 'dark' | 'neutral';
+  backgroundColor?: string;
+  name?: string;
+  folder?: string;
+}): Promise<{ 
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >, 
+  isError: boolean 
+}> {
+  try {
+    const base64Image = await renderMermaidPng(args.code, {
+      theme: args.theme,
+      backgroundColor: args.backgroundColor
+    });
+    
+    // Check if we need to save the image to a folder
+    if (!CONTENT_IMAGE_SUPPORTED) {
+      if (!args.folder) {
+        throw new Error("Folder parameter is required when CONTENT_IMAGE_SUPPORTED is false");
+      }
+
+      // Save the image to a file
+      const fullPath = await saveMermaidImageToFile(base64Image, args.name!, args.folder!);
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Image saved to: ${fullPath}`,
+          }
+        ],
+        isError: false,
+      };
+    }
+    
+    // Return the image in the response
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Here is the generated image",
+        },
+        {
+          type: "image",
+          data: base64Image,
+          mimeType: "image/png",
+        },
+      ],
+      isError: false,
+    };
+  } catch (error) {
+    return handleMermaidError(error);
+  }
+}
+
 // Tool handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [GENERATE_TOOL],
 }));
 
+// Set up the request handler for tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const { name, arguments: args } = request.params;
@@ -314,44 +473,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error("Invalid arguments for generate");
       }
       
-      try {
-        const base64Image = await renderMermaidPng(args.code, {
-          theme: args.theme,
-          backgroundColor: args.backgroundColor
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Here is the generated image",
-            },
-            {
-              type: "image",
-              data: base64Image,
-              mimeType: "image/png",
-            },
-          ],
-          isError: false,
-        };
-      } catch (error) {
-        // Specific handling for Mermaid syntax errors
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        const isSyntaxError = errorMessage.includes("Syntax error") || 
-                             errorMessage.includes("Parse error") || 
-                             errorMessage.includes("Mermaid rendering failed");
-        
-        return {
-          content: [
-            {
-              type: "text",
-              text: isSyntaxError 
-                ? `Mermaid syntax error: ${errorMessage}\n\nPlease check your diagram syntax.` 
-                : `Error generating diagram: ${errorMessage}`,
-            }
-          ],
-          isError: true,
-        };
-      }
+      // Process the generate request
+      return await processGenerateRequest(args);
     }
 
     return {
