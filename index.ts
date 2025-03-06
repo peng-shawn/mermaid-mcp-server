@@ -136,7 +136,7 @@ const GENERATE_TOOL: Tool = {
 const server = new Server(
   {
     name: "mermaid-mcp-server",
-    version: "0.1.0",
+    version: "0.1.1",
   },
   {
     capabilities: {
