@@ -20,9 +20,8 @@ The server uses Puppeteer to launch a headless browser, render the Mermaid diagr
 2. Creating an HTML template with the Mermaid code
 3. Loading the Mermaid.js library
 4. Rendering the diagram to SVG
-5. Taking a screenshot of the rendered SVG
-6. Converting the screenshot to a PNG image
-7. Either returning the image directly or saving it to disk
+5. Taking a screenshot of the rendered SVG as PNG
+6. Either returning the image directly or saving it to disk
 
 ## Build
 
@@ -37,9 +36,9 @@ npx tsc
 ```json
 "mcpServers": {
   "mermaid": {
-    "command": "node",
+    "command": "npx",
     "args": [
-      "<PROJECT_ROOT>/mermaid-mcp-server/dist/index.js"
+      npx @peng-shawn/mermaid-mcp-server@0.1.1
     ]
   }
 }
@@ -48,10 +47,8 @@ npx tsc
 ### Use with Cursor
 
 ```bash
-env CONTENT_IMAGE_SUPPORTED=false node <PROJECT_ROOT>/mermaid-mcp-server/dist/index.js
+env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server@0.1.1
 ```
-
-We need to set CONTENT_IMAGE_SUPPORTED to false since Cursor doesn't support inline images in responses.
 
 You can find a list of mermaid diagrams under `./diagrams`, they are created using Cursor agent with prompt: "generate mermaid diagrams and save them in a separate diagrams folder explaining how renderMermaidPng work"
 
@@ -123,6 +120,16 @@ The behavior of the `generate` tool depends on the `CONTENT_IMAGE_SUPPORTED` env
   "folder": "/path/to/diagrams"
 }
 ```
+
+## FAQ
+
+### Doesn't Claude desktop already support mermaid via canvas?
+
+Yes, but it doesn't support the `theme` and `backgroundColor` options. Plus, having a dedicated server makes it easier to create mermaid diagrams with different MCP clients.
+
+### Why do I need to specify CONTENT_IMAGE_SUPPORTED=false when using with Cursor?
+
+Cursor doesn't support inline images in responses yet.
 
 ## License
 
