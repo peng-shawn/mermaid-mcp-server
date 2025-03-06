@@ -1,5 +1,7 @@
 # Mermaid MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
+
 A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images. This server allows AI assistants and other applications to generate visual diagrams from textual descriptions using the Mermaid markdown syntax.
 
 ## Features
@@ -30,6 +32,14 @@ npx tsc
 ```
 
 ## Usage
+
+### Installing via Smithery
+
+To install Mermaid Diagram Generator for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server):
+
+```bash
+npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
+```
 
 ### Use with Claude desktop
 
