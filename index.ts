@@ -136,7 +136,7 @@ const GENERATE_TOOL: Tool = {
 const server = new Server(
   {
     name: "mermaid-mcp-server",
-    version: "0.1.1",
+    version: "0.1.2",
   },
   {
     capabilities: {
@@ -431,12 +431,26 @@ async function processGenerateRequest(args: {
       };
     }
     
+    // If folder is provided and CONTENT_IMAGE_SUPPORTED is true, save the image to the folder
+    // but also return the image in the response
+    let savedMessage = "";
+    if (args.folder && args.name) {
+      try {
+        const fullPath = await saveMermaidImageToFile(base64Image, args.name, args.folder);
+        savedMessage = `Image also saved to: ${fullPath}`;
+        log(LogLevel.INFO, savedMessage);
+      } catch (saveError) {
+        log(LogLevel.ERROR, `Failed to save image to folder: ${(saveError as Error).message}`);
+        savedMessage = `Note: Failed to save image to folder: ${(saveError as Error).message}`;
+      }
+    }
+    
     // Return the image in the response
     return {
       content: [
         {
           type: "text",
-          text: "Here is the generated image",
+          text: savedMessage ? `Here is the generated image. ${savedMessage}` : "Here is the generated image",
         },
         {
           type: "image",

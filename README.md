@@ -38,16 +38,16 @@ npx tsc
   "mermaid": {
     "command": "npx",
     "args": [
-      npx @peng-shawn/mermaid-mcp-server@0.1.1
+      npx @peng-shawn/mermaid-mcp-server@0.1.2
     ]
   }
 }
 ```
 
-### Use with Cursor
+### Use with Cursor and Cline
 
 ```bash
-env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server@0.1.1
+env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server@0.1.2
 ```
 
 You can find a list of mermaid diagrams under `./diagrams`, they are created using Cursor agent with prompt: "generate mermaid diagrams and save them in a separate diagrams folder explaining how renderMermaidPng work"
