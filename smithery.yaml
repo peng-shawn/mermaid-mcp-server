@@ -1,0 +1,27 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required: []
+    properties:
+      contentImageSupported:
+        type: boolean
+        default: true
+        description: Set to true if images should be returned directly in the response.
+          Set to false if images should be saved to disk, requiring 'name' and
+          'folder' parameters.
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({
+      command: 'node',
+      args: ['dist/index.js'],
+      env: {
+        CONTENT_IMAGE_SUPPORTED: config.contentImageSupported ? 'true' : 'false'
+      }
+    })
+  exampleConfig:
+    contentImageSupported: true
