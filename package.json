@@ -1,5 +1,5 @@
 {
-  "name": "mermaid-mcp-server",
+  "name": "@peng-shawn/mermaid-mcp-server",
   "version": "0.1.0",
   "description": "A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images",
   "main": "dist/index.js",
