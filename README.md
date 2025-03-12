@@ -4,6 +4,10 @@
 
 A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images. This server allows AI assistants and other applications to generate visual diagrams from textual descriptions using the Mermaid markdown syntax.
 
+<a href="https://glama.ai/mcp/servers/lzjlbitkzr">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
+</a>
+
 ## Features
 
 - Converts Mermaid diagram code to PNG images
