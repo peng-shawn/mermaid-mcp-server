@@ -39,7 +39,7 @@ npx tsc
   "mermaid": {
     "command": "npx",
     "args": [
-      npx @peng-shawn/mermaid-mcp-server@0.1.3
+      npx @peng-shawn/mermaid-mcp-server
     ]
   }
 }
@@ -48,7 +48,7 @@ npx tsc
 ### Use with Cursor and Cline
 
 ```bash
-env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server@0.1.3
+env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server
 ```
 
 You can find a list of mermaid diagrams under `./diagrams`, they are created using Cursor agent with prompt: "generate mermaid diagrams and save them in a separate diagrams folder explaining how renderMermaidPng work"
@@ -159,6 +159,50 @@ Yes, but it doesn't support the `theme` and `backgroundColor` options. Plus, hav
 
 Cursor doesn't support inline images in responses yet.
 
+
+## Publishing
+
+This project uses GitHub Actions to automate the publishing process to npm.
+
+### Method 1: Using the Release Script (Recommended)
+
+1. Make sure all your changes are committed and pushed
+2. Run the release script with either a specific version number or a semantic version increment:
+   ```bash
+   # Using a specific version number
+   npm run release 0.1.4
+   
+   # Using semantic version increments
+   npm run release patch  # Increments the patch version (e.g., 0.1.3 → 0.1.4)
+   npm run release minor  # Increments the minor version (e.g., 0.1.3 → 0.2.0)
+   npm run release major  # Increments the major version (e.g., 0.1.3 → 1.0.0)
+   ```
+3. The script will:
+   - Validate the version format or semantic increment
+   - Check if you're on the main branch
+   - Detect and warn about version mismatches between files
+   - Update all version references consistently (package.json, package-lock.json, and index.ts)
+   - Create a single commit with all version changes
+   - Create and push a git tag
+   - The GitHub workflow will then automatically build and publish to npm
+
+### Method 2: Manual Process
+
+1. Update your code and commit the changes
+2. Create and push a new tag with the version number:
+   ```bash
+   git tag v0.1.4  # Use the appropriate version number
+   git push origin v0.1.4
+   ```
+3. The GitHub workflow will automatically:
+   - Build the project
+   - Publish to npm with the version from the tag
+
+Note: You need to set up the `NPM_TOKEN` secret in your GitHub repository settings. To do this:
+1. Generate an npm access token with publish permissions
+2. Go to your GitHub repository → Settings → Secrets and variables → Actions
+3. Create a new repository secret named `NPM_TOKEN` with your npm token as the value
+
 ## Badges
 
 [![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
@@ -166,6 +210,7 @@ Cursor doesn't support inline images in responses yet.
 <a href="https://glama.ai/mcp/servers/lzjlbitkzr">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
 </a>
+
 
 ## License
 
