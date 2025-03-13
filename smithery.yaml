@@ -20,7 +20,8 @@ startCommand:
       command: 'node',
       args: ['dist/index.js'],
       env: {
-        CONTENT_IMAGE_SUPPORTED: config.contentImageSupported ? 'true' : 'false'
+        CONTENT_IMAGE_SUPPORTED: config.contentImageSupported ? 'true' : 'false',
+        PUPPETEER_EXECUTABLE_PATH: '/usr/bin/chromium'
       }
     })
   exampleConfig:

@@ -1,12 +1,7 @@
 # Mermaid MCP Server
 
-[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
 
 A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images. This server allows AI assistants and other applications to generate visual diagrams from textual descriptions using the Mermaid markdown syntax.
-
-<a href="https://glama.ai/mcp/servers/lzjlbitkzr">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
-</a>
 
 ## Features
 
@@ -37,14 +32,6 @@ npx tsc
 
 ## Usage
 
-### Installing via Smithery
-
-To install Mermaid Diagram Generator for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server):
-
-```bash
-npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
-```
-
 ### Use with Claude desktop
 
 ```json
@@ -52,7 +39,7 @@ npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
   "mermaid": {
     "command": "npx",
     "args": [
-      npx @peng-shawn/mermaid-mcp-server@0.1.2
+      npx @peng-shawn/mermaid-mcp-server@0.1.3
     ]
   }
 }
@@ -61,7 +48,7 @@ npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
 ### Use with Cursor and Cline
 
 ```bash
-env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server@0.1.2
+env CONTENT_IMAGE_SUPPORTED=false npx @peng-shawn/mermaid-mcp-server@0.1.3
 ```
 
 You can find a list of mermaid diagrams under `./diagrams`, they are created using Cursor agent with prompt: "generate mermaid diagrams and save them in a separate diagrams folder explaining how renderMermaidPng work"
@@ -77,6 +64,33 @@ npx @modelcontextprotocol/inspector node dist/index.js
 The server will start and listen on stdio for MCP protocol messages.
 
 Learn more about inspector [here](https://modelcontextprotocol.io/docs/tools/inspector).
+
+### Installing via Smithery
+
+To install Mermaid Diagram Generator for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server):
+
+```bash
+npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
+```
+
+### Docker and Smithery Environments
+
+When running in Docker containers (including via Smithery), you may need to handle Chrome dependencies:
+
+1. The server now attempts to use Puppeteer's bundled browser by default
+2. If you encounter browser-related errors, you have two options:
+
+   **Option 1: During Docker image build:**
+   - Set `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true` when installing Puppeteer
+   - Install Chrome/Chromium in your Docker container
+   - Set `PUPPETEER_EXECUTABLE_PATH` at runtime to point to the Chrome installation
+
+   **Option 2: Use Puppeteer's bundled Chrome:**
+   - Ensure your Docker container has the necessary dependencies for Chrome
+   - No need to set `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD`
+   - The code will use the bundled browser automatically
+
+For Smithery users, the latest version should work without additional configuration.
 
 ## API
 
@@ -144,6 +158,14 @@ Yes, but it doesn't support the `theme` and `backgroundColor` options. Plus, hav
 ### Why do I need to specify CONTENT_IMAGE_SUPPORTED=false when using with Cursor?
 
 Cursor doesn't support inline images in responses yet.
+
+## Badges
+
+[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
+
+<a href="https://glama.ai/mcp/servers/lzjlbitkzr">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
+</a>
 
 ## License
 

@@ -136,7 +136,7 @@ const GENERATE_TOOL: Tool = {
 const server = new Server(
   {
     name: "mermaid-mcp-server",
-    version: "0.1.2",
+    version: "0.1.3",
   },
   {
     capabilities: {
@@ -179,6 +179,9 @@ async function renderMermaidPng(code: string, config: {
 
   const browser = await puppeteer.launch({
     headless: true,
+    // Use the bundled browser instead of looking for Chrome on the system
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
   
   // Declare page outside try block so it's accessible in catch and finally
