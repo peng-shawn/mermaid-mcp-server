@@ -1,12 +1,7 @@
 # Mermaid MCP Server
 
-[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
 
 A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images. This server allows AI assistants and other applications to generate visual diagrams from textual descriptions using the Mermaid markdown syntax.
-
-<a href="https://glama.ai/mcp/servers/lzjlbitkzr">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
-</a>
 
 ## Features
 
@@ -36,14 +31,6 @@ npx tsc
 ```
 
 ## Usage
-
-### Installing via Smithery
-
-To install Mermaid Diagram Generator for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server):
-
-```bash
-npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
-```
 
 ### Use with Claude desktop
 
@@ -77,6 +64,14 @@ npx @modelcontextprotocol/inspector node dist/index.js
 The server will start and listen on stdio for MCP protocol messages.
 
 Learn more about inspector [here](https://modelcontextprotocol.io/docs/tools/inspector).
+
+### Installing via Smithery
+
+To install Mermaid Diagram Generator for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server):
+
+```bash
+npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
+```
 
 ## API
 
@@ -144,6 +139,14 @@ Yes, but it doesn't support the `theme` and `backgroundColor` options. Plus, hav
 ### Why do I need to specify CONTENT_IMAGE_SUPPORTED=false when using with Cursor?
 
 Cursor doesn't support inline images in responses yet.
+
+## Badges
+
+[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
+
+<a href="https://glama.ai/mcp/servers/lzjlbitkzr">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
+</a>
 
 ## License
 
