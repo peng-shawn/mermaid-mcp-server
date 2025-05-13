@@ -223,6 +223,12 @@ async function renderMermaidPng(code: string, config: {
     </body>
     </html>
     `;
+    // 注意：要在 page.goto() **之前** 设置
+    await page.setViewport({
+      width: 1200,            // 视口尺寸保持和原来相同即可
+      height: 800,
+      deviceScaleFactor: 3    // 2~4 皆可，越大 PNG 越清晰也越大
+    });
     
     // Write the HTML to a temporary file
     const tempHtmlPath = path.join(__dirname, 'temp-mermaid.html');
