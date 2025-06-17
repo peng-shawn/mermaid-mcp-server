@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/peng-shawn-mermaid-mcp-server-badge.png)](https://mseep.ai/app/peng-shawn-mermaid-mcp-server)
+
 # Mermaid MCP Server
 
 
