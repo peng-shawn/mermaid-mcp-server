@@ -254,11 +254,11 @@ async function renderMermaid(
     </body>
     </html>
     `;
-    // 注意：要在 page.goto() **之前** 设置
+    // Note: Must be set before page.goto() to ensure the page renders with the correct dimensions from the start
     await page.setViewport({
-      width: 1200, // 视口尺寸保持和原来相同即可
+      width: 1200, // Keep the same viewport size as before
       height: 800,
-      deviceScaleFactor: 3, // 2~4 皆可，越大 PNG 越清晰也越大
+      deviceScaleFactor: 3, // 2~4 is fine, the larger the PNG, the clearer and larger it is
     });
 
     // Write the HTML to a temporary file
