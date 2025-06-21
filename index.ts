@@ -16,7 +16,7 @@ import {
 /**
  * Mermaid MCP Server
  *
- * This server provides a tool to render Mermaid diagrams as PNG images.
+ * This server provides a tool to render Mermaid diagrams as PNG images or SVG files.
  *
  * Environment Variables:
  * - MERMAID_LOG_VERBOSITY: Controls the verbosity of logging (default: 2)
@@ -39,6 +39,7 @@ import {
  * - code: The mermaid markdown to generate an image from (required)
  * - theme: Theme for the diagram (optional, one of: "default", "forest", "dark", "neutral")
  * - backgroundColor: Background color for the diagram (optional, e.g., "white", "transparent", "#F0F0F0")
+ * - outputFormat: Output format for the diagram (optional, "png" or "svg", defaults to "png")
  * - name: Name for the generated file (required when saving to folder or when CONTENT_IMAGE_SUPPORTED=false)
  * - folder: Folder path to save the image to (optional, but required when CONTENT_IMAGE_SUPPORTED=false)
  *
@@ -47,6 +48,7 @@ import {
  * - The 'name' parameter is required when 'folder' is specified
  * - If a file with the same name already exists, a timestamp will be appended to the filename
  * - When CONTENT_IMAGE_SUPPORTED=false, all images must be saved to disk, and 'name' and 'folder' are required
+ * - SVG files are saved as .svg text files, PNG files are saved as .png binary files
  */
 
 // __dirname is not available in ESM modules by default
@@ -110,7 +112,7 @@ function log(level: LogLevel, message: string) {
 // Define tools
 const GENERATE_TOOL: Tool = {
   name: "generate",
-  description: "Generate PNG image from mermaid markdown",
+  description: "Generate PNG image or SVG from mermaid markdown",
   inputSchema: {
     type: "object",
     properties: {
@@ -127,6 +129,11 @@ const GENERATE_TOOL: Tool = {
         type: "string",
         description:
           "Background color for the diagram, e.g. 'white', 'transparent', '#F0F0F0' (optional)",
+      },
+      outputFormat: {
+        type: "string",
+        enum: ["png", "svg"],
+        description: "Output format for the diagram (optional, defaults to 'png')",
       },
       name: {
         type: "string",
@@ -163,6 +170,7 @@ function isGenerateArgs(args: unknown): args is {
   code: string;
   theme?: "default" | "forest" | "dark" | "neutral";
   backgroundColor?: string;
+  outputFormat?: "png" | "svg";
   name?: string;
   folder?: string;
 } {
@@ -175,18 +183,21 @@ function isGenerateArgs(args: unknown): args is {
       ["default", "forest", "dark", "neutral"].includes((args as any).theme)) &&
     (!(args as any).backgroundColor ||
       typeof (args as any).backgroundColor === "string") &&
+    (!(args as any).outputFormat ||
+      ["png", "svg"].includes((args as any).outputFormat)) &&
     (!(args as any).name || typeof (args as any).name === "string") &&
     (!(args as any).folder || typeof (args as any).folder === "string")
   );
 }
 
-async function renderMermaidPng(
+async function renderMermaid(
   code: string,
   config: {
     theme?: "default" | "forest" | "dark" | "neutral";
     backgroundColor?: string;
+    outputFormat?: "png" | "svg";
   } = {}
-): Promise<string> {
+): Promise<{ data: string; svg?: string }> {
   log(LogLevel.INFO, "Launching Puppeteer");
   log(LogLevel.DEBUG, `Rendering with config: ${JSON.stringify(config)}`);
 
@@ -326,20 +337,32 @@ async function renderMermaidPng(
 
     log(LogLevel.DEBUG, "Mermaid rendered successfully in browser");
 
-    // Take a screenshot of the SVG
-    const svgElement = await page.$("#container svg");
-    if (!svgElement) {
-      log(LogLevel.ERROR, "SVG element not found after successful rendering");
-      throw new Error("SVG element not found");
+    // Get the SVG content if needed
+    let svgContent: string | undefined;
+    if (config.outputFormat === "svg") {
+      svgContent = await page.$eval("#container svg", (svg) => {
+        return svg.outerHTML;
+      });
+      log(LogLevel.DEBUG, "SVG content extracted");
     }
 
-    log(LogLevel.DEBUG, "Taking screenshot of SVG");
-    // Take a screenshot with the correct dimensions
-    const base64Image = await svgElement.screenshot({
-      omitBackground: false,
-      type: "png",
-      encoding: "base64",
-    });
+    // Take a screenshot of the SVG for PNG output
+    let base64Image = "";
+    if (config.outputFormat === "png" || config.outputFormat === undefined) {
+      const svgElement = await page.$("#container svg");
+      if (!svgElement) {
+        log(LogLevel.ERROR, "SVG element not found after successful rendering");
+        throw new Error("SVG element not found");
+      }
+
+      log(LogLevel.DEBUG, "Taking screenshot of SVG");
+      // Take a screenshot with the correct dimensions
+      base64Image = await svgElement.screenshot({
+        omitBackground: false,
+        type: "png",
+        encoding: "base64",
+      });
+    }
 
     // Clean up the temporary file
     fs.unlinkSync(tempHtmlPath);
@@ -347,11 +370,11 @@ async function renderMermaidPng(
 
     log(LogLevel.INFO, "Mermaid rendered successfully");
 
-    return base64Image;
+    return { data: base64Image, svg: svgContent };
   } catch (error) {
     log(
       LogLevel.ERROR,
-      `Error in renderMermaidPng: ${
+      `Error in renderMermaid: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
@@ -412,6 +435,43 @@ async function saveMermaidImageToFile(
 }
 
 /**
+ * Saves a generated Mermaid SVG to a file
+ *
+ * @param svgContent - The SVG content as a string
+ * @param name - The name to use for the file (without extension)
+ * @param folder - The folder to save the file in
+ * @returns The full path to the saved file
+ */
+async function saveMermaidSvgToFile(
+  svgContent: string,
+  name: string,
+  folder: string
+): Promise<string> {
+  // Create the folder if it doesn't exist
+  if (!fs.existsSync(folder)) {
+    log(LogLevel.INFO, `Creating folder: ${folder}`);
+    fs.mkdirSync(folder, { recursive: true });
+  }
+
+  // Generate a filename, adding timestamp if file already exists
+  let filename = `${name}.svg`;
+  const filePath = path.join(folder, filename);
+
+  if (fs.existsSync(filePath)) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    filename = `${name}-${timestamp}.svg`;
+    log(LogLevel.INFO, `File already exists, using filename: ${filename}`);
+  }
+
+  // Save the SVG to the file
+  const fullPath = path.join(folder, filename);
+  fs.writeFileSync(fullPath, svgContent, "utf-8");
+
+  log(LogLevel.INFO, `SVG saved to: ${fullPath}`);
+  return fullPath;
+}
+
+/**
  * Handles Mermaid syntax errors and other errors
  *
  * @param error - The error that occurred
@@ -450,6 +510,7 @@ async function processGenerateRequest(args: {
   code: string;
   theme?: "default" | "forest" | "dark" | "neutral";
   backgroundColor?: string;
+  outputFormat?: "png" | "svg";
   name?: string;
   folder?: string;
 }): Promise<{
@@ -460,12 +521,14 @@ async function processGenerateRequest(args: {
   isError: boolean;
 }> {
   try {
-    const base64Image = await renderMermaidPng(args.code, {
+    const outputFormat = args.outputFormat || "png";
+    const result = await renderMermaid(args.code, {
       theme: args.theme,
       backgroundColor: args.backgroundColor,
+      outputFormat: outputFormat,
     });
 
-    // Check if we need to save the image to a folder
+    // Check if we need to save the file to a folder
     if (!CONTENT_IMAGE_SUPPORTED) {
       if (!args.folder) {
         throw new Error(
@@ -473,64 +536,106 @@ async function processGenerateRequest(args: {
         );
       }
 
-      // Save the image to a file
-      const fullPath = await saveMermaidImageToFile(
-        base64Image,
-        args.name!,
-        args.folder!
-      );
+      // Save the file based on format
+      let fullPath: string;
+      if (outputFormat === "svg") {
+        if (!result.svg) {
+          throw new Error("SVG content not available");
+        }
+        fullPath = await saveMermaidSvgToFile(
+          result.svg,
+          args.name!,
+          args.folder!
+        );
+      } else {
+        fullPath = await saveMermaidImageToFile(
+          result.data,
+          args.name!,
+          args.folder!
+        );
+      }
 
       return {
         content: [
           {
             type: "text",
-            text: `Image saved to: ${fullPath}`,
+            text: `${outputFormat.toUpperCase()} saved to: ${fullPath}`,
           },
         ],
         isError: false,
       };
     }
 
-    // If folder is provided and CONTENT_IMAGE_SUPPORTED is true, save the image to the folder
-    // but also return the image in the response
+    // If folder is provided and CONTENT_IMAGE_SUPPORTED is true, save the file to the folder
+    // but also return the content in the response
     let savedMessage = "";
     if (args.folder && args.name) {
       try {
-        const fullPath = await saveMermaidImageToFile(
-          base64Image,
-          args.name,
-          args.folder
-        );
-        savedMessage = `Image also saved to: ${fullPath}`;
+        let fullPath: string;
+        if (outputFormat === "svg") {
+          if (!result.svg) {
+            throw new Error("SVG content not available");
+          }
+          fullPath = await saveMermaidSvgToFile(
+            result.svg,
+            args.name,
+            args.folder
+          );
+        } else {
+          fullPath = await saveMermaidImageToFile(
+            result.data,
+            args.name,
+            args.folder
+          );
+        }
+        savedMessage = `${outputFormat.toUpperCase()} also saved to: ${fullPath}`;
         log(LogLevel.INFO, savedMessage);
       } catch (saveError) {
         log(
           LogLevel.ERROR,
-          `Failed to save image to folder: ${(saveError as Error).message}`
+          `Failed to save ${outputFormat} to folder: ${(saveError as Error).message}`
         );
-        savedMessage = `Note: Failed to save image to folder: ${
+        savedMessage = `Note: Failed to save ${outputFormat} to folder: ${
           (saveError as Error).message
         }`;
       }
     }
 
-    // Return the image in the response
-    return {
-      content: [
-        {
-          type: "text",
-          text: savedMessage
-            ? `Here is the generated image. ${savedMessage}`
-            : "Here is the generated image",
-        },
-        {
-          type: "image",
-          data: base64Image,
-          mimeType: "image/png",
-        },
-      ],
-      isError: false,
-    };
+    // Return the appropriate content based on format
+    if (outputFormat === "svg") {
+      if (!result.svg) {
+        throw new Error("SVG content not available");
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: savedMessage
+              ? `Here is the generated SVG:\n\n${result.svg}\n\n${savedMessage}`
+              : `Here is the generated SVG:\n\n${result.svg}`,
+          },
+        ],
+        isError: false,
+      };
+    } else {
+      // Return the PNG image in the response
+      return {
+        content: [
+          {
+            type: "text",
+            text: savedMessage
+              ? `Here is the generated image. ${savedMessage}`
+              : "Here is the generated image",
+          },
+          {
+            type: "image",
+            data: result.data,
+            mimeType: "image/png",
+          },
+        ],
+        isError: false,
+      };
+    }
   } catch (error) {
     return handleMermaidError(error);
   }
