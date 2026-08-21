@@ -221,7 +221,7 @@ Note: You need to set up the `NPM_TOKEN` secret in your GitHub repository settin
 
 ## Badges
 
-[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
+[![Listed on Skillselion](https://skillselion.com/badge/mcp/tool/io.github.peng-shawn/mermaid-mcp-server.svg)](https://skillselion.com/mcp/tool/io.github.peng-shawn/mermaid-mcp-server)
 
 <a href="https://glama.ai/mcp/servers/lzjlbitkzr">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
