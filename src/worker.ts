@@ -3,6 +3,7 @@
 // (a Rust panic aborts the process) must not take the server down.
 import { flattenSvg, type FlattenResult } from "./engine/flatten.js";
 import { takeFallbackSeen, warmFonts } from "./engine/fonts.js";
+import { inlineEmoji, needsEmojiInlining } from "./engine/emoji.js";
 import { MermaidEngine, MermaidSyntaxError } from "./engine/mermaid.js";
 import { rasterize, rasterizeTiles } from "./engine/raster.js";
 import type { PngImage, RenderJob, RenderOutput, Request, Response, Validation } from "./protocol.js";
@@ -28,7 +29,8 @@ async function render(engine: MermaidEngine, job: RenderJob): Promise<RenderOutp
   if (flat.svg.includes("<foreignObject")) warnings.push("This diagram uses HTML content (<foreignObject>); outside browsers, that content is not drawn.");
   const out: RenderOutput = { diagramType, svg: flat.svg, width: flat.width, height: flat.height, warnings, timings: { renderMs: t1 - t0, flattenMs: t2 - t1, rasterMs: 0 } };
   if (job.format === "png") {
-    Object.assign(out, rasterizeJob(flat, job, systemFonts, warnings));
+    const raster = needsEmojiInlining(flat.svg) ? { ...flat, svg: inlineEmoji(engine.dom, flat.svg, job.scale) } : flat;
+    Object.assign(out, rasterizeJob(raster, job, systemFonts, warnings));
     out.timings.rasterMs = performance.now() - t2;
   }
   return out;

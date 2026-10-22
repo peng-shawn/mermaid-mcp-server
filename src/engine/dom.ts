@@ -25,7 +25,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 
 const INHERITED = new Set([
   "font-size", "font-family", "font-weight", "font-style", "text-anchor",
-  "dominant-baseline", "white-space", "visibility", "letter-spacing", "line-height",
+  "dominant-baseline", "white-space", "visibility", "letter-spacing", "line-height", "color",
 ]);
 
 const INITIAL: Record<string, string> = {
@@ -42,15 +42,17 @@ const INITIAL: Record<string, string> = {
   "letter-spacing": "normal",
   "line-height": "normal",
   "white-space": "normal",
+  color: "black",
 };
 
 // Elements that are resources, not rendering: no geometry of their own
+// (lowercase: HTML parsing can leave camelCase SVG names lowercased)
 const NON_RENDERED = new Set([
-  "defs", "style", "marker", "clipPath", "mask", "pattern", "linearGradient", "radialGradient",
+  "defs", "style", "marker", "clippath", "mask", "pattern", "lineargradient", "radialgradient",
   "title", "desc", "metadata", "symbol", "script", "filter",
 ]);
 const SHAPES = new Set(["rect", "circle", "ellipse", "line", "polyline", "polygon", "path"]);
-const TEXT_CONTENT = new Set(["text", "tspan", "textPath", "a"]);
+const TEXT_CONTENT = new Set(["text", "tspan", "textpath", "a"]);
 const CONTAINERS = new Set(["g", "a", "svg", "switch"]);
 
 const ABSOLUTE_UNITS: Record<string, number> = { px: 1, pt: 4 / 3, pc: 16, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, q: 96 / 101.6 };
@@ -98,6 +100,9 @@ export interface GeometryDom {
   specified(el: Element, prop: string): string | undefined;
   computed(el: Element, prop: string): string;
   fontOf(el: Element): FontSpec;
+  // Laid-out runs of a <text>: baseline position, text, font and the element
+  // that owns each run
+  textRuns(textEl: Element): Array<{ x: number; y: number; text: string; font: FontSpec; owner: Element }>;
 }
 
 export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOptions = {}): GeometryDom {
@@ -110,6 +115,25 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   }
   Object.defineProperty(window, "innerWidth", { value: viewportWidth, configurable: true });
   Object.defineProperty(window, "innerHeight", { value: viewportHeight, configurable: true });
+
+  // window.CSS, which jsdom lacks. Mermaid validates colors with
+  // CSS.supports and otherwise falls back to a check that rejects "Purple".
+  const probe = document.createElement("div").style;
+  window.CSS ??= {
+    supports(property: string, value?: string): boolean {
+      if (value === undefined) {
+        const m = /^\(\s*([\w-]+)\s*:\s*(.+?)\s*\)$/.exec(property.trim());
+        if (!m) return false;
+        [property, value] = [m[1], m[2]];
+      }
+      probe.cssText = "";
+      probe.setProperty(property, value);
+      return probe.getPropertyValue(property) !== "";
+    },
+    escape(value: string): string {
+      return String(value).replace(/[^\w-]|^-?\d/g, (c) => (/\d/.test(c) ? `\\${c.charCodeAt(0).toString(16)} ` : `\\${c}`));
+    },
+  };
 
   // ---- invalidation ---------------------------------------------------------
   //
@@ -144,7 +168,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
     layoutDirty.add(node);
     // Text layout of the enclosing <text> depends on everything inside it
     const el = node.nodeType === 1 ? (node as Element) : node.parentElement;
-    const text = el && TEXT_CONTENT.has(el.localName) ? el.closest("text") : null;
+    const text = el && TEXT_CONTENT.has(el.localName.toLowerCase()) ? el.closest("text") : null;
     if (text) {
       textCache.delete(text);
       layoutDirty.add(text);
@@ -478,7 +502,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
           runs.push(run);
           chunk.runs.push(run);
           x += run.width;
-        } else if (child.nodeType === 1 && ["tspan", "a", "textPath"].includes((child as Element).localName)) {
+        } else if (child.nodeType === 1 && TEXT_CONTENT.has((child as Element).localName.toLowerCase())) {
           walk(child as Element);
         }
       }
@@ -561,12 +585,12 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   // "no geometry": Blink skips empty shapes (zero-size rects, paths without
   // segments, text without glyphs) but counts degenerate ones (a lone point).
   function ownBox(el: Element): Rect | null {
-    const tag = el.localName;
+    const tag = el.localName.toLowerCase();
     if (NON_RENDERED.has(tag)) return null;
     switch (tag) {
       case "rect":
       case "image":
-      case "foreignObject": {
+      case "foreignobject": {
         const w = num(el, "width", "x");
         const h = num(el, "height", "y");
         return w > 0 && h > 0 ? { x: num(el, "x", "x"), y: num(el, "y", "y"), width: w, height: h } : null;
@@ -601,7 +625,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
       }
       case "text":
       case "tspan":
-      case "textPath": {
+      case "textpath": {
         // A <text> without glyphs but with child elements still has a
         // zero-size box at its origin
         const box = textBox(el);
@@ -640,7 +664,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   function rendered(el: Element): boolean {
     for (let e: Element | null = el; e && e.namespaceURI === SVG_NS; e = parentElement(e)) {
       if (specified(e, "display") === "none") return false;
-      if (e !== el && NON_RENDERED.has(e.localName)) return false;
+      if (e !== el && NON_RENDERED.has(e.localName.toLowerCase())) return false;
       const parent = parentElement(e);
       if (parent?.localName === "switch" && switchChoice(parent) !== e) return false;
     }
@@ -696,10 +720,10 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
 
   function kindOf(el: Element): "shape" | "text" | "leaf" | "container" | "hidden" | null {
     if (el.namespaceURI !== SVG_NS) return null;
-    const tag = el.localName;
+    const tag = el.localName.toLowerCase();
     if (SHAPES.has(tag)) return "shape";
     if (tag === "text") return "text";
-    if (tag === "image" || tag === "foreignObject" || tag === "use") return "leaf";
+    if (tag === "image" || tag === "foreignobject" || tag === "use") return "leaf";
     if (CONTAINERS.has(tag)) return "container";
     if (NON_RENDERED.has(tag)) return "hidden";
     return null;
@@ -945,6 +969,10 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
     fontOf: (el) => {
       sync();
       return fontOf(el);
+    },
+    textRuns: (el) => {
+      sync();
+      return runsOf(el).map((r) => ({ x: r.x, y: r.y, text: r.text, font: r.font, owner: r.owner }));
     },
   };
 }

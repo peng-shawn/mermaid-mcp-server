@@ -8,6 +8,7 @@
 // each property as an attribute gives an SVG that renders the same anywhere.
 import type { GeometryDom } from "./dom.js";
 import { parseInlineStyle } from "./css.js";
+import { parseColor } from "./color.js";
 import { concreteFamily } from "./fonts.js";
 
 // Properties SVG accepts as presentation attributes
@@ -23,6 +24,28 @@ const PRESENTATION = new Set([
   "unicode-bidi", "vector-effect", "visibility", "word-spacing", "writing-mode", "mix-blend-mode",
 ]);
 const COLOR_PROPS = new Set(["fill", "stroke", "stop-color", "flood-color", "lighting-color"]);
+// Where a color's alpha goes once the color itself is written as #rrggbb
+const OPACITY_OF: Record<string, string> = { fill: "fill-opacity", stroke: "stroke-opacity", "stop-color": "stop-opacity", "flood-color": "flood-opacity" };
+
+// SVG element names with capitals. HTML parsers restore them from a table,
+// and jsdom's table lacks some (feDropShadow), leaving lowercase names that
+// SVG renderers ignore; an unknown filter primitive then hides the element.
+const SVG_NAMES = [
+  "altGlyph", "altGlyphDef", "altGlyphItem", "animateColor", "animateMotion", "animateTransform", "clipPath",
+  "feBlend", "feColorMatrix", "feComponentTransfer", "feComposite", "feConvolveMatrix", "feDiffuseLighting",
+  "feDisplacementMap", "feDistantLight", "feDropShadow", "feFlood", "feFuncA", "feFuncB", "feFuncG", "feFuncR",
+  "feGaussianBlur", "feImage", "feMerge", "feMergeNode", "feMorphology", "feOffset", "fePointLight",
+  "feSpecularLighting", "feSpotLight", "feTile", "feTurbulence", "foreignObject", "glyphRef", "linearGradient",
+  "radialGradient", "textPath",
+];
+const CANONICAL = new Map(SVG_NAMES.map((n) => [n.toLowerCase(), n]));
+const LOWERCASE_TAG = new RegExp(`<(/?)(${SVG_NAMES.map((n) => n.toLowerCase()).join("|")})(?=[\\s/>])`, "g");
+
+// XML serialization (HTML serialization emits entities like &nbsp; that XML
+// doesn't define) with canonical SVG element names
+export function serializeSvg(dom: GeometryDom, root: Element): string {
+  return new dom.window.XMLSerializer().serializeToString(root).replace(LOWERCASE_TAG, (_m: string, slash: string, name: string) => `<${slash}${CANONICAL.get(name)}`);
+}
 
 export interface FlattenOptions {
   // Background painted behind the diagram; omitted or "transparent" for none
@@ -67,7 +90,27 @@ export function flattenSvg(dom: GeometryDom, markup: string, options: FlattenOpt
         if (prop === "transform" && !inline.has("transform")) continue;
         out.set(prop, v);
       }
+      // The root names its font even when no rule does: other renderers'
+      // defaults differ from the browser default the text was measured with
+      if (el === root && !out.has("font-family")) {
+        const font = dom.fontOf(el);
+        out.set("font-family", `"${concreteFamily(font.family, font.weight, font.style)}", ${font.family}`);
+      }
       writes.push([el, out]);
+    }
+    // Colors as #rrggbb plus opacity: the form every consumer parses
+    for (const [el, out] of writes) {
+      for (const prop of Object.keys(OPACITY_OF).concat("lighting-color")) {
+        const raw = out.get(prop) ?? (out.has(prop) ? undefined : el.getAttribute(prop) ?? undefined);
+        const c = raw ? parseColor(raw) : null;
+        if (!c) continue;
+        out.set(prop, c.hex);
+        const op = OPACITY_OF[prop];
+        if (op && c.alpha < 1) {
+          const existing = parseFloat(out.get(op) ?? el.getAttribute(op) ?? "1");
+          out.set(op, String(+((Number.isFinite(existing) ? existing : 1) * c.alpha).toFixed(4)));
+        }
+      }
     }
     for (const [el, out] of writes) {
       // Browsers ignore empty presentation attributes (font-weight=""); other
@@ -90,7 +133,8 @@ export function flattenSvg(dom: GeometryDom, markup: string, options: FlattenOpt
       for (const [k, v] of Object.entries({ x: vx || 0, y: vy || 0, width: vw || width, height: vh || height, fill: options.background })) bg.setAttribute(k, String(v));
       root.insertBefore(bg, root.firstChild);
     }
-    return { svg: root.outerHTML, width, height, viewBox: { x: vx || 0, y: vy || 0, width: vw || width, height: vh || height } };
+    const svg = serializeSvg(dom, root);
+    return { svg, width, height, viewBox: { x: vx || 0, y: vy || 0, width: vw || width, height: vh || height } };
   } finally {
     host.remove();
   }
