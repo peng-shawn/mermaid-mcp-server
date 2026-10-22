@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs",
     "accuracy": "npm run build && node test/accuracy/run.mjs",
-    "bench": "npm run build && node bench/bench.mjs",
+    "bench": "npm run build && node bench/e2e.mjs",
     "release": "scripts/release.sh"
   },
   "bin": {
