@@ -1,5 +1,5 @@
 const seq = ["sequenceDiagram","  participant A as Client","  participant B as API"]; for (let i=0;i<6;i++) seq.push(`  A->>B: request ${i}`, `  B-->>A: response ${i}`);
-export const cases = {
+const builtin = {
   flowchart: "flowchart TD\n  A[Start] --> B{Is it valid?}\n  B -->|Yes| C[Process order]\n  B -->|No| D[Reject]\n  C --> E[(Database)]\n  subgraph Backend\n    C\n    E\n  end",
   sequence: seq.join("\n") + "\n  Note over A,B: done\n  alt ok\n    B->>A: 200\n  else fail\n    B->>A: 500\n  end",
   class: "classDiagram\n  class Animal {\n    +String name\n    +eat() void\n  }\n  Animal <|-- Dog\n  Animal <|-- Cat\n  Dog : +bark()",
@@ -17,3 +17,10 @@ export const cases = {
   block: "block-beta\n  columns 2\n  a b",
   c4: "C4Context\n  Person(u, \"User\")\n  System(s, \"System\")\n  Rel(u, s, \"Uses\")",
 };
+
+// CORPUS=docs selects every mermaid-example block from Mermaid's own syntax docs
+import fs from "fs";
+export const cases =
+  process.env.CORPUS === "docs"
+    ? JSON.parse(fs.readFileSync(new URL("./corpus-docs.json", import.meta.url), "utf8"))
+    : builtin;

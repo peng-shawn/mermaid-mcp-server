@@ -25,3 +25,16 @@ export const SEEDED_RANDOM_SRC = `(() => {
     return s / 4294967296;
   };
 })()`;
+
+// Freezes "now" (gantt draws a today marker) so oracle and browserless agree
+export const FROZEN_CLOCK_SRC = `(() => {
+  if (globalThis.__frozenDate) return;
+  const Real = Date;
+  const NOW = Real.UTC(2026, 0, 15, 12, 0, 0);
+  class FrozenDate extends Real {
+    constructor(...args) { super(...(args.length ? args : [NOW])); }
+    static now() { return NOW; }
+  }
+  globalThis.__frozenDate = Real;
+  globalThis.Date = FrozenDate;
+})()`;

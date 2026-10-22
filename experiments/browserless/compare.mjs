@@ -8,6 +8,8 @@ import fs from "fs";
 import path from "path";
 import { render } from "./render.mjs";
 import { cases } from "./corpus.mjs";
+import { FROZEN_CLOCK_SRC } from "./config.mjs";
+(0, eval)(FROZEN_CLOCK_SRC);
 
 const oracleDir = process.argv[2] ?? "out/oracle";
 const outDir = process.argv[3] ?? "out/browserless";

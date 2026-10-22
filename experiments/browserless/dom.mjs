@@ -570,12 +570,10 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
         const inner = target ? containerBBox(target) : null;
         return transformRect(inner, new Matrix(1, 0, 0, 1, num(el, "x", "x"), num(el, "y", "y")));
       }
-      case "svg":
-        // A nested <svg> reports its contents in its own (viewBox) units; the
-        // viewport mapping is part of its transform to the parent
-        return containerBBox(el);
       default:
-        return containerBBox(el);
+        // Containers (g, a, switch, nested and root <svg>) report the box their
+        // last layout computed; a nested <svg> reports it in viewBox units
+        return containerBox(el);
     }
   }
 
@@ -606,21 +604,135 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
     return true;
   }
 
+  // ---- incremental layout -------------------------------------------------
+  //
+  // Blink keeps a layout object per rendered element, and a container
+  // recomputes its bounding box only when one of its children reports that
+  // its own bounds changed (SVGContentContainer::Layout -> UpdateBoundingBoxes)
+  // or when a child went away. A child "changes" when its box or transform
+  // differs from the previous layout, starting from an empty box at the origin
+  // and the identity transform. So an empty <text> created at the origin never
+  // reports a change, its container is never recomputed, and the container
+  // stays invalid and invisible to its ancestors' getBBox. getBBox therefore
+  // depends on layout history, and we replay that history: every geometry
+  // query is a layout flush, and per-element state persists between flushes
+  // the way Blink's layout objects do.
+
+  const SHAPES = new Set(["rect", "circle", "ellipse", "line", "polyline", "polygon", "path"]);
+  const CONTAINERS = new Set(["g", "a", "svg", "switch"]);
+  const state = new WeakMap(); // element -> { box, valid, tf, pass, parent, kids }
+  const passes = new WeakMap(); // root <svg> -> pass number
+
+  function kindOf(el) {
+    if (el.namespaceURI !== SVG_NS) return null;
+    const tag = el.localName;
+    if (SHAPES.has(tag)) return "shape";
+    if (tag === "text") return "text";
+    if (tag === "image" || tag === "foreignObject" || tag === "use") return "leaf";
+    if (CONTAINERS.has(tag)) return "container";
+    if (NON_RENDERED.has(tag)) return "hidden";
+    return null;
+  }
+
+  function renderedChildren(el) {
+    const only = el.localName === "switch" ? switchChoice(el) : null;
+    const out = [];
+    for (const child of el.children) {
+      if (only && child !== only) continue;
+      if (!kindOf(child) || specified(child, "display") === "none") continue;
+      out.push(child);
+    }
+    return out;
+  }
+
+  const rectEq = (a, b) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  const transformKey = (el) => {
+    const m = localTransform(el);
+    return m.isIdentity() ? "" : [m.a, m.b, m.c, m.d, m.e, m.f].join(",");
+  };
+
+  // Lays out one element; returns whether its bounds changed (Blink's
+  // SVGLayoutResult::bounds_changed)
+  function layoutNode(el, pass) {
+    const kind = kindOf(el);
+    let old = state.get(el);
+    // A layout object that missed the previous pass, or moved, is brand new
+    if (old && (old.pass !== pass - 1 || old.parent !== el.parentNode)) old = undefined;
+    let box, valid, kids;
+    if (kind === "container" || kind === "hidden") {
+      kids = renderedChildren(el);
+      let childChanged = false;
+      for (const c of kids) if (layoutNode(c, pass)) childChanged = true;
+      // Losing a child forces a recompute (bounds_dirty_from_removed_child_)
+      if (old?.kids && old.kids.some((k) => !kids.includes(k))) childChanged = true;
+      if (childChanged || !old) {
+        box = null;
+        valid = false;
+        if (childChanged) {
+          for (const c of kids) {
+            const cs = state.get(c);
+            if (!cs || !cs.valid || kindOf(c) === "hidden") continue;
+            const tb = transformRect(cs.box, localTransform(c));
+            if (globalThis.__bboxDebug) globalThis.__bboxDebug(el, c, tb);
+            box = box ? unionEvenIfEmpty(box, tb) : tb;
+            valid = true;
+          }
+        }
+        box ??= { ...ZERO };
+      } else {
+        ({ box, valid } = old);
+      }
+      if (kind === "hidden") valid = false;
+    } else {
+      const b = ownBBox(el);
+      if (kind === "text") valid = !!b || el.children.length > 0;
+      else valid = !!b;
+      box = b ?? { ...ZERO };
+    }
+    const tf = transformKey(el);
+    // Leaves always report a change on their first layout (validity-probe.mjs);
+    // containers only when their recomputed box or their transform moved
+    const isLeaf = kind !== "container" && kind !== "hidden";
+    const changed = (isLeaf && !old) || !rectEq(box, old?.box ?? ZERO) || tf !== (old?.tf ?? "");
+    state.set(el, { box, valid, tf, pass, parent: el.parentNode, kids });
+    return changed;
+  }
+
+  function unionEvenIfEmpty(a, b) {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+  }
+
+  function outermostSvg(el) {
+    let root = null;
+    for (let e = el; e && e.namespaceURI === SVG_NS; e = e.parentNode) if (e.localName === "svg") root = e;
+    return root;
+  }
+
+  // Runs a layout pass over the <svg> tree containing `el`
+  function flush(el) {
+    const root = outermostSvg(el);
+    if (!root || !root.isConnected) return null;
+    const pass = (passes.get(root) ?? 0) + 1;
+    passes.set(root, pass);
+    layoutNode(root, pass);
+    return root;
+  }
+
+  function containerBox(el) {
+    const root = flush(el);
+    if (!root) return null;
+    const st = state.get(el);
+    return st && st.pass === passes.get(root) ? st.box : null;
+  }
+
+  // Stateless union of children, for content that has no layout objects of its
+  // own (the target of a <use>)
   function containerBBox(el) {
     let box = null;
-    const only = el.localName === "switch" ? switchChoice(el) : null;
-    for (const child of el.children) {
-      if (el.localName === "switch" && child !== only) continue;
-      if (child.namespaceURI !== SVG_NS) continue;
-      if (specified(child, "display") === "none") continue;
-      const b = ownBBox(child);
-      if (!b) {
-        if (globalThis.__bboxDebug) globalThis.__bboxDebug(el, child, null);
-        continue;
-      }
-      const tb = transformRect(b, localTransform(child));
-      if (globalThis.__bboxDebug) globalThis.__bboxDebug(el, child, tb);
-      box = unionRect(box, tb);
+    for (const child of renderedChildren(el)) {
+      const b = kindOf(child) === "container" ? containerBBox(child) : ownBBox(child);
+      if (b) box = unionRect(box, transformRect(b, localTransform(child)));
     }
     return box;
   }
@@ -680,6 +792,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
   // An SVGRect has only x/y/width/height; Mermaid relies on `left` being absent
   proto.getBBox = function () {
     fresh();
+    flush(this);
     const b = (rendered(this) && ownBBox(this)) || ZERO;
     return { x: b.x, y: b.y, width: b.width, height: b.height };
   };
@@ -743,7 +856,8 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
   elementProto.getBoundingClientRect = function () {
     if (this.namespaceURI === SVG_NS) {
       fresh();
-      const own = this.localName === "svg" && !(this.parentNode?.namespaceURI === SVG_NS) ? containerBBox(this) : ownBBox(this);
+      flush(this);
+      const own = ownBBox(this);
       return toRect(transformRect(own, ctm(this).multiply(this.localName === "svg" ? new Matrix() : new Matrix())));
     }
     return htmlRect.call(this);
@@ -807,7 +921,13 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
     return this.__ctx;
   };
 
-  return { window, document, font: { fontMetrics, textWidth }, internals: { ownBBox, layoutText, computed } };
+  return {
+    window,
+    document,
+    font: { fontMetrics, textWidth },
+    cascade: { specified, computed, fresh },
+    internals: { ownBBox, layoutText, computed },
+  };
 }
 
 // A CanvasRenderingContext2D whose text measurement is real (Skia) and whose

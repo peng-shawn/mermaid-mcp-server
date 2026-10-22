@@ -5,18 +5,9 @@ import fs from "fs";
 import path from "path";
 import { createRequire } from "module";
 import { cases } from "./corpus.mjs";
-import { MERMAID_CONFIG, SEEDED_RANDOM_SRC } from "./config.mjs";
+import { MERMAID_CONFIG, SEEDED_RANDOM_SRC, FROZEN_CLOCK_SRC } from "./config.mjs";
 
-const require = createRequire(import.meta.url);
-const mermaidPath = require.resolve("mermaid/dist/mermaid.min.js");
-const outDir = process.argv[2] ?? "out/oracle";
-fs.mkdirSync(outDir, { recursive: true });
-
-const browser = await puppeteer.launch({ headless: true });
-const page = await browser.newPage();
-await page.setContent("<!doctype html><html><body><div id=c></div></body></html>");
-await page.addScriptTag({ path: mermaidPath });
-await page.evaluate((cfg) => {
+const INSTRUMENT_SRC = (cfg) => {
   window.__calls = {};
   const wrap = (proto, name, label) => {
     const orig = proto[name];
@@ -25,32 +16,45 @@ await page.evaluate((cfg) => {
   };
   wrap(SVGGraphicsElement.prototype, "getBBox", "getBBox");
   wrap(SVGTextContentElement.prototype, "getComputedTextLength", "getComputedTextLength");
-  wrap(SVGTextContentElement.prototype, "getSubStringLength", "getSubStringLength");
   wrap(SVGGeometryElement.prototype, "getTotalLength", "getTotalLength");
   wrap(SVGGeometryElement.prototype, "getPointAtLength", "getPointAtLength");
   wrap(Element.prototype, "getBoundingClientRect", "getBoundingClientRect");
-  wrap(SVGGraphicsElement.prototype, "getCTM", "getCTM");
-  wrap(SVGGraphicsElement.prototype, "getScreenCTM", "getScreenCTM");
   wrap(window, "getComputedStyle", "getComputedStyle");
   wrap(CanvasRenderingContext2D.prototype, "measureText", "canvas.measureText");
-  for (const p of ["offsetWidth", "offsetHeight", "clientWidth", "clientHeight", "scrollWidth"]) {
-    const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, p) || Object.getOwnPropertyDescriptor(Element.prototype, p);
-    const owner = Object.getOwnPropertyDescriptor(HTMLElement.prototype, p) ? HTMLElement.prototype : Element.prototype;
-    Object.defineProperty(owner, p, { get() { window.__calls[p] = (window.__calls[p] || 0) + 1; return d.get.call(this); } });
-  }
   window.mermaid.initialize(cfg);
-}, MERMAID_CONFIG);
+};
 
+const require = createRequire(import.meta.url);
+const mermaidPath = require.resolve("mermaid/dist/mermaid.min.js");
+const outDir = process.argv[2] ?? "out/oracle";
+fs.mkdirSync(outDir, { recursive: true });
+
+const browser = await puppeteer.launch({ headless: true });
+let page;
+async function freshPage() {
+  page = await browser.newPage();
+  await page.setContent("<!doctype html><html><body><div id=c></div></body></html>");
+  await page.addScriptTag({ path: mermaidPath });
+  await page.evaluate(INSTRUMENT_SRC, MERMAID_CONFIG);
+}
 const report = {};
+await freshPage();
+const RENDER_TIMEOUT = 20000;
 for (const [name, code] of Object.entries(cases)) {
-  const r = await page.evaluate(async (name, code, seed) => {
+  const run = page.evaluate(async (name, code, seed, clock) => {
     window.__calls = {};
     eval(seed);
+    eval(clock);
     try {
       const { svg } = await window.mermaid.render(`m-${name}`, code);
       return { svg, calls: window.__calls };
     } catch (e) { return { error: String(e?.message ?? e), calls: window.__calls }; }
-  }, name, code, SEEDED_RANDOM_SRC);
+  }, name, code, SEEDED_RANDOM_SRC, FROZEN_CLOCK_SRC);
+  const r = await Promise.race([run, new Promise((res) => setTimeout(() => res({ error: "TIMEOUT", calls: {} }), RENDER_TIMEOUT))]);
+  if (r.error === "TIMEOUT") {
+    await page.close().catch(() => {});
+    await freshPage();
+  }
   if (r.svg) fs.writeFileSync(path.join(outDir, `${name}.svg`), r.svg);
   report[name] = r.error ? { error: r.error } : r.calls;
   console.log(name.padEnd(16), r.error ? "ERROR " + r.error.slice(0, 80) : JSON.stringify(r.calls));
