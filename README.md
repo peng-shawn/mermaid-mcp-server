@@ -23,6 +23,12 @@ The server uses Puppeteer to launch a headless browser, render the Mermaid diagr
 5. Either saving the SVG directly or taking a screenshot as PNG
 6. Either returning the image/SVG directly or saving it to disk
 
+## Requirements
+
+- Node.js 22.12.0 or later
+
+> **Security notice:** versions before 0.3.0 depend on Puppeteer and Mermaid releases with known vulnerabilities. Please upgrade to 0.3.0 or later. The configurations below use `@latest` so `npx` picks up new releases.
+
 ## Build
 
 ```bash
@@ -38,7 +44,7 @@ npx tsc
   "mcpServers": {
     "mermaid": {
       "command": "npx",
-      "args": ["-y", "@peng-shawn/mermaid-mcp-server"]
+      "args": ["-y", "@peng-shawn/mermaid-mcp-server@latest"]
     }
   }
 }
@@ -47,7 +53,7 @@ npx tsc
 ### Use with Cursor and Cline
 
 ```bash
-env CONTENT_IMAGE_SUPPORTED=false npx -y @peng-shawn/mermaid-mcp-server
+env CONTENT_IMAGE_SUPPORTED=false npx -y @peng-shawn/mermaid-mcp-server@latest
 ```
 
 You can find a list of mermaid diagrams under `./diagrams`, they are created using Cursor agent with prompt: "generate mermaid diagrams and save them in a separate diagrams folder explaining how renderMermaidPng work"
