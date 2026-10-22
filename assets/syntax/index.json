@@ -1,0 +1,210 @@
+{
+ "agentflow": {
+  "title": "Agentflow (v12.0.0+)",
+  "keywords": [
+   "agentflow-beta"
+  ]
+ },
+ "architecture": {
+  "title": "Architecture Diagrams Documentation (v11.1.0+)",
+  "keywords": [
+   "architecture-beta"
+  ]
+ },
+ "block": {
+  "title": "Block Diagrams Documentation",
+  "keywords": [
+   "block"
+  ]
+ },
+ "c4": {
+  "title": "C4 Diagrams",
+  "keywords": [
+   "C4Context",
+   "C4Container",
+   "C4Component",
+   "C4Dynamic",
+   "C4Deployment"
+  ]
+ },
+ "class": {
+  "title": "Class diagrams",
+  "keywords": [
+   "classDiagram"
+  ]
+ },
+ "cynefin": {
+  "title": "Cynefin Framework Diagram (v11.16.0+)",
+  "keywords": [
+   "cynefin-beta"
+  ]
+ },
+ "er": {
+  "title": "Entity Relationship Diagrams",
+  "keywords": [
+   "erDiagram"
+  ]
+ },
+ "eventmodeling": {
+  "title": "Event Modeling Diagram (v11.15.0+)",
+  "keywords": [
+   "eventmodeling"
+  ]
+ },
+ "flowchart": {
+  "title": "Flowcharts - Basic Syntax",
+  "keywords": [
+   "flowchart",
+   "graph"
+  ]
+ },
+ "gantt": {
+  "title": "Gantt diagrams",
+  "keywords": [
+   "gantt"
+  ]
+ },
+ "gitgraph": {
+  "title": "GitGraph Diagrams",
+  "keywords": [
+   "gitGraph"
+  ]
+ },
+ "ishikawa": {
+  "title": "Ishikawa diagram (v11.12.3+)",
+  "keywords": [
+   "ishikawa-beta"
+  ]
+ },
+ "kanban": {
+  "title": "Mermaid Kanban Diagram Documentation",
+  "keywords": [
+   "kanban"
+  ]
+ },
+ "mindmap": {
+  "title": "Mindmap",
+  "keywords": [
+   "mindmap"
+  ]
+ },
+ "packet": {
+  "title": "Packet Diagram (v11.0.0+)",
+  "keywords": [
+   "packet"
+  ]
+ },
+ "pie": {
+  "title": "Pie chart diagrams",
+  "keywords": [
+   "pie"
+  ]
+ },
+ "quadrant": {
+  "title": "Quadrant Chart",
+  "keywords": [
+   "quadrantChart"
+  ]
+ },
+ "radar": {
+  "title": "Radar Diagram (v11.6.0+)",
+  "keywords": [
+   "radar-beta"
+  ]
+ },
+ "railroad": {
+  "title": "Railroad Diagrams (v11.16.0+)",
+  "keywords": [
+   "railroad-ebnf-beta",
+   "railroad-abnf-beta",
+   "railroad-peg-beta",
+   "railroad-beta"
+  ]
+ },
+ "requirement": {
+  "title": "Requirement Diagram",
+  "keywords": [
+   "requirementDiagram"
+  ]
+ },
+ "sankey": {
+  "title": "Sankey diagram (v10.3.0+)",
+  "keywords": [
+   "sankey"
+  ]
+ },
+ "sequence": {
+  "title": "Sequence diagrams",
+  "keywords": [
+   "sequenceDiagram"
+  ]
+ },
+ "state": {
+  "title": "State diagrams",
+  "keywords": [
+   "stateDiagram-v2",
+   "stateDiagram"
+  ]
+ },
+ "swimlanes": {
+  "title": "Swimlanes Diagram (v11.16.0+)",
+  "keywords": [
+   "swimlane-beta"
+  ]
+ },
+ "timeline": {
+  "title": "Timeline Diagram",
+  "keywords": [
+   "timeline"
+  ]
+ },
+ "tree-view": {
+  "title": "TreeView Diagram (v11.14.0+)",
+  "keywords": [
+   "treeView-beta"
+  ]
+ },
+ "treemap": {
+  "title": "Treemap Diagram",
+  "keywords": [
+   "treemap-beta"
+  ]
+ },
+ "usecase": {
+  "title": "Use case diagrams (12.0.0+)",
+  "keywords": [
+   "usecase-beta"
+  ]
+ },
+ "journey": {
+  "title": "User Journey Diagram",
+  "keywords": [
+   "journey"
+  ]
+ },
+ "venn": {
+  "title": "Venn diagrams (v11.12.3+)",
+  "keywords": [
+   "venn-beta"
+  ]
+ },
+ "wardley": {
+  "title": "Wardley Maps (v11.14.0+)",
+  "keywords": [
+   "wardley-beta"
+  ]
+ },
+ "xychart": {
+  "title": "XY Chart",
+  "keywords": [
+   "xychart",
+   "xychart-beta"
+  ]
+ },
+ "zenuml": {
+  "title": "ZenUML",
+  "keywords": [
+   "zenuml"
+  ]
+ }
+}
