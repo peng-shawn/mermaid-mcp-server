@@ -1,43 +1,23 @@
 # Mermaid MCP Server
 
-A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images or SVG files. This server allows AI assistants and other applications to generate visual diagrams from textual descriptions using the Mermaid markdown syntax.
+An MCP server that renders [Mermaid](https://mermaid.js.org) diagrams to PNG and SVG, and checks their syntax, using the official Mermaid library. **No browser required.**
 
-## Features
+Earlier versions drove a headless Chrome. 1.0 runs Mermaid itself in Node on a DOM whose geometry answers match Chromium's, and draws PNGs with [resvg](https://github.com/linebender/resvg). Measured against Chromium on the 520 examples in Mermaid's own documentation, the layouts are structurally identical, 99.8% are within 1px, and the PNGs differ from Chromium's screenshots in a median 0.6% of drawn pixels. See [how it works](docs/design.md).
 
-- Converts Mermaid diagram code to PNG images or SVG files
-- Supports multiple diagram themes (default, forest, dark, neutral)
-- Customizable background colors
-- Uses Puppeteer for high-quality headless browser rendering
-- Implements the MCP protocol for seamless integration with AI assistants
-- Flexible output options: return images/SVG directly or save to disk
-- Error handling with detailed error messages
+|                                | 0.3 (Chrome)               | 1.0 (browserless)       |
+| ------------------------------ | -------------------------- | ----------------------- |
+| Install                        | 22 s, 825 MB (576 MB Chrome) | 8 s, 276 MB           |
+| First diagram after start      | 8.1 s                      | 1.6 s                   |
+| Small diagram                  | 1.27 s                     | 0.11 s                  |
+| 8 small diagrams at once       | 5.3 s                      | 0.6 s                   |
+| 120-message sequence diagram   | 1.7 s                      | 0.5 s                   |
+| 400 nodes in 40 subgraphs      | 2.6 s                      | 4.2 s ([why](docs/design.md#performance)) |
 
-## How It Works
+<sub>End to end over stdio (`bench/e2e.mjs`), Apple M1 Max, Node 22.</sub>
 
-The server uses Puppeteer to launch a headless browser, render the Mermaid diagram to SVG, and optionally capture a screenshot of the rendered diagram. The process involves:
+## Quick start
 
-1. Launching a headless browser instance
-2. Creating an HTML template with the Mermaid code
-3. Loading the Mermaid.js library
-4. Rendering the diagram to SVG
-5. Either saving the SVG directly or taking a screenshot as PNG
-6. Either returning the image/SVG directly or saving it to disk
-
-## Requirements
-
-- Node.js 22.12.0 or later
-
-> **Security notice:** versions before 0.3.0 depend on Puppeteer and Mermaid releases with known vulnerabilities. Please upgrade to 0.3.0 or later. The configurations below use `@latest` so `npx` picks up new releases.
-
-## Build
-
-```bash
-npx tsc
-```
-
-## Usage
-
-### Use with Claude desktop
+Claude Desktop, Claude Code, Cursor, VS Code and other MCP clients:
 
 ```json
 {
@@ -50,189 +30,111 @@ npx tsc
 }
 ```
 
-### Use with Cursor and Cline
+Claude Code:
 
 ```bash
-env CONTENT_IMAGE_SUPPORTED=false npx -y @peng-shawn/mermaid-mcp-server@latest
+claude mcp add mermaid -- npx -y @peng-shawn/mermaid-mcp-server@latest
 ```
 
-You can find a list of mermaid diagrams under `./diagrams`, they are created using Cursor agent with prompt: "generate mermaid diagrams and save them in a separate diagrams folder explaining how renderMermaidPng work"
+Requires Node.js 22.12 or later (Mermaid 12 needs it).
 
-### Run with inspector
+## Tools
 
-Run the server with inspector for testing and debugging:
+### `render_mermaid`
+
+Renders Mermaid code and returns the image, so the model can look at the result, or saves it to a file.
+
+| Parameter | Description |
+| --- | --- |
+| `code` | Mermaid source (required) |
+| `format` | `png` (default) or `svg` |
+| `theme` | `default`, `neutral`, `dark`, `forest`, `base`, `neo`, `neo-dark`, `redux`, `redux-dark`, `redux-color`, `redux-dark-color` |
+| `look` | `classic`, `neo` or `handDrawn` |
+| `background` | CSS color or `transparent`; PNGs default to white |
+| `scale` | PNG pixel density, 0.5 to 4 (default 2) |
+| `outputPath` | Absolute path to save the file. Existing files are never overwritten; a numbered name is used instead |
+| `includeImage` | With `outputPath`, also return the image |
+
+Returns the image plus `{ diagramType, format, width, height, path?, warnings }` as structured content.
+
+- Images returned to the model are at most 1568px on the long side, where vision models stop gaining detail. Very tall or wide diagrams come back as several tiles at a readable size instead of one unreadable strip.
+- SVGs have Mermaid's CSS resolved into plain attributes, so they look the same in Inkscape, PowerPoint, Figma or an image viewer as in a browser.
+- Output is deterministic: the same code gives the same bytes.
+
+### `validate_mermaid`
+
+Parses without rendering, in milliseconds. Returns the diagram type, or the error with line, column, expected tokens and the syntax reference to read:
+
+```json
+{ "valid": false,
+  "error": { "message": "Parse error on line 2: ...", "line": 2, "column": 4, "expected": ["link", "+", "-", "()", "ACTOR"] },
+  "syntaxReference": "mermaid://syntax/sequence" }
+```
+
+### `generate` (0.x compatibility)
+
+The original tool, with the same parameters and responses, now rendered without a browser. Prefer `render_mermaid`. Set `MERMAID_LEGACY_TOOL=false` to hide it.
+
+## Resources
+
+Mermaid's syntax reference for every diagram type, from the Mermaid docs, at `mermaid://syntax/<type>`: `flowchart`, `sequence`, `class`, `state`, `er`, `gantt`, `pie`, `mindmap`, `timeline`, `gitgraph`, `architecture`, `wardley`, `venn`, `kanban` and 20 more. Errors point to the one to read, which helps with the newer diagram types models haven't seen much of.
+
+## Configuration
+
+| Variable | Default | |
+| --- | --- | --- |
+| `MERMAID_OUTPUT_DIR` | unset | Files may only be written inside this directory (checked on the real path, so symlinks can't escape it) |
+| `MERMAID_RENDER_TIMEOUT_MS` | 30000 | A render taking longer is stopped and the renderer restarted |
+| `MERMAID_INLINE_MAX_PIXELS` | 1568 | Longest edge of images returned to the model |
+| `MERMAID_FILE_MAX_PIXELS` | 8192 | Longest edge of saved PNGs |
+| `MERMAID_LOG_VERBOSITY` | 2 | 0 (emergencies) to 5 (debug), to stderr |
+| `MERMAID_LEGACY_TOOL` | true | Offer the 0.x `generate` tool |
+| `CONTENT_IMAGE_SUPPORTED` | true | 0.x: when false, `generate` saves files and requires `name` and `folder` |
+
+## Fonts
+
+Text is measured and drawn with the font the diagram asks for, resolved the way Chromium resolves it: Mermaid's default `"trebuchet ms", verdana, arial, sans-serif` uses Trebuchet MS on macOS and Windows. When none of the listed fonts is installed, the bundled DejaVu Sans is used, so rendering works in a bare container. For CJK text or color emoji on Linux, install `fonts-noto-cjk` or `fonts-noto-color-emoji`.
+
+## Docker
+
+```bash
+docker build -t mermaid-mcp .
+docker run -i --rm mermaid-mcp
+```
+
+No browser and no system fonts needed in the image.
+
+## Upgrading from 0.x
+
+- Chrome is gone, so `PUPPETEER_EXECUTABLE_PATH`, `PUPPETEER_*` and `MERMAID_DISABLE_SANDBOX` no longer do anything.
+- `generate` keeps its parameters and responses. PNGs are now capped at 8192px on the long side.
+- HTML labels are off: labels are SVG text so they render outside browsers. Diagrams can't turn them back on (`htmlLabels` is a secure setting).
+
+## How it works
+
+Mermaid needs a browser for one thing: measuring. It asks how wide text is and how big shapes are, and lays out the diagram from the answers. This server answers those questions in Node the way Blink does. That covers font shaping with kerning, Chromium's rules for text boxes, baselines and empty shapes, and its incremental layout history, which is observable through `getBBox`. Every rule was found by probing Chromium and is checked against it continuously. [docs/design.md](docs/design.md) has the details and numbers.
+
+## Development
+
+```bash
+npm ci
+npm run build
+npm test                      # engine rules + end-to-end server tests
+node test/accuracy/run.mjs    # layouts vs Chromium on Mermaid's docs (needs Puppeteer's Chrome)
+node test/accuracy/pixels.mjs # PNGs vs Chromium screenshots
+node bench/e2e.mjs            # latency over stdio
+```
+
+Run with the MCP inspector:
 
 ```bash
 npx @modelcontextprotocol/inspector node dist/index.js
 ```
 
-The server will start and listen on stdio for MCP protocol messages.
-
-Learn more about inspector [here](https://modelcontextprotocol.io/docs/tools/inspector).
-
-### Installing via Smithery
-
-To install Mermaid Diagram Generator for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server):
-
-```bash
-npx -y @smithery/cli install @peng-shawn/mermaid-mcp-server --client claude
-```
-
-### Docker and Smithery Environments
-
-When running in Docker containers (including via Smithery), you may need to handle Chrome dependencies:
-
-1. The server now attempts to use Puppeteer's bundled browser by default
-2. If you encounter browser-related errors, you have two options:
-
-   **Option 1: During Docker image build:**
-
-   - Set `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true` when installing Puppeteer
-   - Install Chrome/Chromium in your Docker container
-   - Set `PUPPETEER_EXECUTABLE_PATH` at runtime to point to the Chrome installation
-
-   **Option 2: Use Puppeteer's bundled Chrome:**
-
-   - Ensure your Docker container has the necessary dependencies for Chrome
-   - No need to set `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD`
-   - The code will use the bundled browser automatically
-
-For Smithery users, the latest version should work without additional configuration.
-
-## API
-
-The server exposes a single tool:
-
-- `generate`: Converts Mermaid diagram code to a PNG image or SVG file
-  - Parameters:
-    - `code`: The Mermaid diagram code to render
-    - `theme`: (optional) Theme for the diagram. Options: "default", "forest", "dark", "neutral"
-    - `backgroundColor`: (optional) Background color for the diagram, e.g. 'white', 'transparent', '#F0F0F0'
-    - `outputFormat`: (optional) Output format for the diagram. Options: "png", "svg" (defaults to "png")
-    - `name`: Name for the generated file (required when CONTENT_IMAGE_SUPPORTED=false)
-    - `folder`: Absolute path to save the image/SVG to (required when CONTENT_IMAGE_SUPPORTED=false)
-
-The behavior of the `generate` tool depends on the `CONTENT_IMAGE_SUPPORTED` environment variable:
-
-- When `CONTENT_IMAGE_SUPPORTED=true` (default): The tool returns the image/SVG directly in the response
-- When `CONTENT_IMAGE_SUPPORTED=false`: The tool saves the image/SVG to the specified folder and returns the file path
-
-## Environment Variables
-
-- `CONTENT_IMAGE_SUPPORTED`: Controls whether images are returned directly in the response or saved to disk
-  - `true` (default): Images are returned directly in the response
-  - `false`: Images are saved to disk, requiring `name` and `folder` parameters
-
-## Examples
-
-### Basic Usage
-
-```javascript
-// Generate a flowchart with default settings
-{
-  "code": "flowchart TD\n    A[Start] --> B{Is it?}\n    B -->|Yes| C[OK]\n    B -->|No| D[End]"
-}
-```
-
-### With Theme and Background Color
-
-```javascript
-// Generate a sequence diagram with forest theme and light gray background
-{
-  "code": "sequenceDiagram\n    Alice->>John: Hello John, how are you?\n    John-->>Alice: Great!",
-  "theme": "forest",
-  "backgroundColor": "#F0F0F0"
-}
-```
-
-### Saving to Disk (when CONTENT_IMAGE_SUPPORTED=false)
-
-```javascript
-// Generate a class diagram and save it to disk as PNG
-{
-  "code": "classDiagram\n    Class01 <|-- AveryLongClass\n    Class03 *-- Class04\n    Class05 o-- Class06",
-  "theme": "dark",
-  "name": "class_diagram",
-  "folder": "/path/to/diagrams"
-}
-```
-
-### Generating SVG Output
-
-```javascript
-// Generate a state diagram as SVG
-{
-  "code": "stateDiagram-v2\n    [*] --> Still\n    Still --> [*]\n    Still --> Moving\n    Moving --> Still\n    Moving --> Crash\n    Crash --> [*]",
-  "outputFormat": "svg",
-  "name": "state_diagram",
-  "folder": "/path/to/diagrams"
-}
-```
-
-## FAQ
-
-### Doesn't Claude desktop already support mermaid via canvas?
-
-Yes, but it doesn't support the `theme` and `backgroundColor` options. Plus, having a dedicated server makes it easier to create mermaid diagrams with different MCP clients.
-
-### Why do I need to specify CONTENT_IMAGE_SUPPORTED=false when using with Cursor?
-
-Cursor doesn't support inline images in responses yet.
-
-## Publishing
-
-This project uses GitHub Actions to automate the publishing process to npm.
-
-### Method 1: Using the Release Script (Recommended)
-
-1. Make sure all your changes are committed and pushed
-2. Run the release script with either a specific version number or a semantic version increment:
-
-   ```bash
-   # Using a specific version number
-   npm run release 0.1.4
-
-   # Using semantic version increments
-   npm run release patch  # Increments the patch version (e.g., 0.1.3 → 0.1.4)
-   npm run release minor  # Increments the minor version (e.g., 0.1.3 → 0.2.0)
-   npm run release major  # Increments the major version (e.g., 0.1.3 → 1.0.0)
-   ```
-
-3. The script will:
-   - Validate the version format or semantic increment
-   - Check if you're on the main branch
-   - Detect and warn about version mismatches between files
-   - Update all version references consistently (package.json, package-lock.json, and index.ts)
-   - Create a single commit with all version changes
-   - Create and push a git tag
-   - The GitHub workflow will then automatically build and publish to npm
-
-### Method 2: Manual Process
-
-1. Update your code and commit the changes
-2. Create and push a new tag with the version number:
-   ```bash
-   git tag v0.1.4  # Use the appropriate version number
-   git push origin v0.1.4
-   ```
-3. The GitHub workflow will automatically:
-   - Build the project
-   - Publish to npm with the version from the tag
-
-Note: You need to set up the `NPM_TOKEN` secret in your GitHub repository settings. To do this:
-
-1. Generate an npm access token with publish permissions
-2. Go to your GitHub repository → Settings → Secrets and variables → Actions
-3. Create a new repository secret named `NPM_TOKEN` with your npm token as the value
-
-## Badges
-
-[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)
-
-<a href="https://glama.ai/mcp/servers/lzjlbitkzr">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/lzjlbitkzr/badge" alt="mermaid-mcp-server MCP server" />
-</a>
+Releases: `scripts/release.sh <patch|minor|major|version>` tags and pushes; the publish workflow tests, builds and stages the package on npm for 2FA approval (trusted publishing, no token).
 
 ## License
 
-MIT
+MIT. Bundles DejaVu fonts (Bitstream Vera license, `assets/fonts/dejavu/LICENSE`) and Mermaid's syntax documentation (MIT, `assets/syntax/LICENSE`).
+
+[![smithery badge](https://smithery.ai/badge/@peng-shawn/mermaid-mcp-server)](https://smithery.ai/server/@peng-shawn/mermaid-mcp-server)

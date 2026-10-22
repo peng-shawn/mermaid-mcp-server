@@ -60,7 +60,7 @@ function instrument(win, out) {
 
 const { MermaidEngine, mermaidConfig, SEEDED_RANDOM_SOURCE } = await import("../../dist/engine/mermaid.js");
 
-const browser = await puppeteer.launch({ headless: true });
+const browser = await puppeteer.launch({ headless: true, args: process.getuid?.() === 0 ? ["--no-sandbox"] : [] });
 const page = await browser.newPage();
 await page.setContent("<!doctype html><html><body></body></html>");
 await page.addScriptTag({ path: require.resolve("mermaid/dist/mermaid.min.js") });

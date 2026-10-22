@@ -163,13 +163,16 @@ export function warmFonts(): void {
   faces();
 }
 
+// Chromium's default font settings per platform (standard = serif). On Linux
+// they name Times New Roman, Arial and Monospace, which fontconfig resolves to
+// metric-compatible Liberation faces when present.
 const GENERIC: Record<string, Record<string, string[]>> = {
   darwin: { "sans-serif": ["Helvetica"], serif: ["Times"], monospace: ["Courier"], "system-ui": ["Helvetica"], cursive: ["Apple Chancery"], fantasy: ["Papyrus"] },
-  win32: { "sans-serif": ["Arial"], serif: ["Times New Roman"], monospace: ["Courier New"], "system-ui": ["Segoe UI"], cursive: ["Comic Sans MS"], fantasy: ["Impact"] },
+  win32: { "sans-serif": ["Arial"], serif: ["Times New Roman"], monospace: ["Consolas", "Courier New"], "system-ui": ["Segoe UI"], cursive: ["Comic Sans MS"], fantasy: ["Impact"] },
   linux: {
-    "sans-serif": ["DejaVu Sans", "Liberation Sans", "Noto Sans"],
-    serif: ["DejaVu Serif", "Liberation Serif", "Noto Serif"],
-    monospace: ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"],
+    "sans-serif": ["Arial", "Liberation Sans", "Arimo", "DejaVu Sans", "Noto Sans"],
+    serif: ["Times New Roman", "Liberation Serif", "Tinos", "DejaVu Serif", "Noto Serif"],
+    monospace: ["DejaVu Sans Mono", "Liberation Mono", "Cousine", "Noto Sans Mono"],
     "system-ui": ["DejaVu Sans", "Noto Sans"],
   },
 };
@@ -234,7 +237,7 @@ export function resolveFont(familyList: string, weight: number, style: string): 
     if (lower === "monospace") wantsMono = true;
     const names = generic[lower] ?? [fam, ...(METRIC_ALIASES[lower] ?? [])];
     for (const name of names) {
-      const cands = index.get(name.toLowerCase())?.filter((f) => !f.bundled || generic[lower]);
+      const cands = index.get(name.toLowerCase());
       if (cands?.length) {
         const face = pickFace(cands, weight, italic);
         result = { family: face.families.find((f) => f.toLowerCase() === name.toLowerCase()) ?? face.families[0], face };
@@ -242,6 +245,17 @@ export function resolveFont(familyList: string, weight: number, style: string): 
       }
     }
     if (result) break;
+  }
+  // A list that matches nothing falls back to the browser's standard font (serif)
+  if (!result) {
+    for (const name of wantsMono ? generic.monospace : generic.serif) {
+      const cands = index.get(name.toLowerCase());
+      if (cands?.length) {
+        const face = pickFace(cands, weight, italic);
+        result = { family: face.families.find((f) => f.toLowerCase() === name.toLowerCase()) ?? face.families[0], face };
+        break;
+      }
+    }
   }
   if (!result) {
     const fallback = wantsMono ? BUNDLED_MONO : BUNDLED_SANS;

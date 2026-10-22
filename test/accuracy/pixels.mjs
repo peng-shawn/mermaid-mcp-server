@@ -40,7 +40,7 @@ const { takeFallbackSeen } = await import("../../dist/engine/fonts.js");
 const { inlineEmoji, needsEmojiInlining } = await import("../../dist/engine/emoji.js");
 const engine = await MermaidEngine.create();
 
-const browser = await puppeteer.launch({ headless: true });
+const browser = await puppeteer.launch({ headless: true, args: process.getuid?.() === 0 ? ["--no-sandbox"] : [] });
 const page = await browser.newPage();
 fs.mkdirSync(outDir, { recursive: true });
 

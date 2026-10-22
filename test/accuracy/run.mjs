@@ -59,7 +59,7 @@ async function oracle(cases, config, seedSource) {
   const missing = Object.keys(cases).filter((k) => refresh || !fs.existsSync(path.join(dir, `${k}.json`)));
   if (missing.length) {
     const { default: puppeteer } = await import("puppeteer");
-    const browser = await puppeteer.launch({ headless: true });
+    const browser = await puppeteer.launch({ headless: true, args: process.getuid?.() === 0 ? ["--no-sandbox"] : [] });
     let page;
     const fresh = async () => {
       page = await browser.newPage();
