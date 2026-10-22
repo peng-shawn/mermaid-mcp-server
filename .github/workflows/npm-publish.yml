@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*' # Run workflow on version tags, e.g. v1.0.0
 
+permissions:
+  contents: read
+  id-token: write # required for npm provenance
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
@@ -25,6 +29,6 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} 

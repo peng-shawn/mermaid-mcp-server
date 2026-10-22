@@ -28,6 +28,9 @@ import {
  *   5 = DEBUG - Debug-level messages
  * - CONTENT_IMAGE_SUPPORTED: Controls whether images can be returned directly in the response (default: true)
  *   When set to 'false', the 'name' and 'folder' parameters become mandatory, and all images must be saved to disk.
+ * - MERMAID_OUTPUT_DIR: If set, 'folder' must resolve to this directory or a subdirectory of it (default: unset)
+ * - MERMAID_DISABLE_SANDBOX: Set to 'true' to launch Chromium with --no-sandbox (default: false).
+ *   Only use this when the sandbox cannot work, e.g. in a container running as root.
  *
  * Example:
  *   MERMAID_LOG_VERBOSITY=2 node index.js  # Only show ERROR and more severe logs (default)
@@ -51,9 +54,6 @@ import {
  * - SVG files are saved as .svg text files, PNG files are saved as .png binary files
  */
 
-// __dirname is not available in ESM modules by default
-const __dirname = url.fileURLToPath(new URL(".", import.meta.url));
-
 // Define log levels with numeric values for comparison
 enum LogLevel {
   EMERGENCY = 0,
@@ -71,6 +71,25 @@ const LOG_VERBOSITY = process.env.MERMAID_LOG_VERBOSITY
 
 // Check if content images are supported (default: true)
 const CONTENT_IMAGE_SUPPORTED = process.env.CONTENT_IMAGE_SUPPORTED !== "false";
+
+// Optional base directory that all saved files must live under
+const OUTPUT_DIR = process.env.MERMAID_OUTPUT_DIR
+  ? path.resolve(process.env.MERMAID_OUTPUT_DIR)
+  : undefined;
+
+// Chromium sandbox is on unless explicitly disabled
+const DISABLE_SANDBOX = process.env.MERMAID_DISABLE_SANDBOX === "true";
+
+// Upper bounds to keep a single request from exhausting resources
+const MAX_CODE_LENGTH = 100_000;
+const RENDER_TIMEOUT_MS = 30_000;
+
+// Accepts named colors, hex colors and rgb()/rgba()/hsl()/hsla() with numeric arguments
+const COLOR_PATTERN =
+  /^(?:[a-zA-Z]{1,30}|#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\(\s*[0-9.%]+(?:\s*[,\s/]\s*[0-9.%]+){2,3}\s*\))$/;
+
+// File names may only contain safe characters and must not start with a dot
+const NAME_PATTERN = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}$/;
 
 // Convert LogLevel to MCP log level string
 function getMcpLogLevel(
@@ -182,9 +201,11 @@ function isGenerateArgs(args: unknown): args is {
     (!(args as any).theme ||
       ["default", "forest", "dark", "neutral"].includes((args as any).theme)) &&
     (!(args as any).backgroundColor ||
-      typeof (args as any).backgroundColor === "string") &&
+      (typeof (args as any).backgroundColor === "string" &&
+        COLOR_PATTERN.test((args as any).backgroundColor))) &&
     (!(args as any).outputFormat ||
       ["png", "svg"].includes((args as any).outputFormat)) &&
+    (args as any).code.length <= MAX_CODE_LENGTH &&
     (!(args as any).name || typeof (args as any).name === "string") &&
     (!(args as any).folder || typeof (args as any).folder === "string")
   );
@@ -212,7 +233,7 @@ async function renderMermaid(
     headless: true,
     // Use the bundled browser instead of looking for Chrome on the system
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: DISABLE_SANDBOX ? ["--no-sandbox", "--disable-setuid-sandbox"] : [],
   });
 
   // Declare page outside try block so it's accessible in catch and finally
@@ -231,15 +252,28 @@ async function renderMermaid(
       log(LogLevel.DEBUG, text);
     });
 
-    // Create a simple HTML template without the CDN reference
+    page.setDefaultTimeout(RENDER_TIMEOUT_MS);
+
+    // Block all network and file access; the page only needs inline content
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const reqUrl = req.url();
+      if (reqUrl.startsWith("data:") || reqUrl === "about:blank") {
+        req.continue();
+      } else {
+        log(LogLevel.WARNING, `Blocked request from renderer: ${reqUrl}`);
+        req.abort();
+      }
+    });
+
+    // Static HTML template; user-supplied values are never interpolated into it
     const htmlContent = `
     <!DOCTYPE html>
     <html>
     <head>
       <title>Mermaid Renderer</title>
       <style>
-        body { 
-          background: ${config.backgroundColor || "white"};
+        body {
           margin: 0;
           padding: 0;
         }
@@ -254,23 +288,19 @@ async function renderMermaid(
     </body>
     </html>
     `;
-    // Note: Must be set before page.goto() to ensure the page renders with the correct dimensions from the start
+    // Note: Must be set before loading content to ensure the page renders with the correct dimensions from the start
     await page.setViewport({
       width: 1200, // Keep the same viewport size as before
       height: 800,
       deviceScaleFactor: 3, // 2~4 is fine, the larger the PNG, the clearer and larger it is
     });
 
-    // Write the HTML to a temporary file
-    const tempHtmlPath = path.join(__dirname, "temp-mermaid.html");
-    fs.writeFileSync(tempHtmlPath, htmlContent);
-
     log(LogLevel.INFO, `Rendering mermaid code: ${code.substring(0, 50)}...`);
     log(LogLevel.DEBUG, `Full mermaid code: ${code}`);
 
-    // Navigate to the HTML file
-    await page.goto(`file://${tempHtmlPath}`);
-    log(LogLevel.DEBUG, "Navigated to HTML template");
+    // Load the template in-memory (about:blank origin) rather than from a file:// URL
+    await page.setContent(htmlContent);
+    log(LogLevel.DEBUG, "Loaded HTML template");
 
     // Add the mermaid script to the page
     await page.addScriptTag({ path: mermaidPath });
@@ -282,11 +312,15 @@ async function renderMermaid(
       "#container",
       async (container, mermaidCode, mermaidConfig) => {
         try {
+          // Set via the style API so the value is never parsed as HTML/CSS source
+          document.body.style.background =
+            mermaidConfig.backgroundColor || "white";
+
           // @ts-ignore - mermaid is loaded by the script tag
           window.mermaid.initialize({
             startOnLoad: false,
             theme: mermaidConfig.theme || "default",
-            securityLevel: "loose",
+            securityLevel: "strict",
             logLevel: 5,
           });
 
@@ -364,10 +398,6 @@ async function renderMermaid(
       });
     }
 
-    // Clean up the temporary file
-    fs.unlinkSync(tempHtmlPath);
-    log(LogLevel.DEBUG, "Temporary HTML file cleaned up");
-
     log(LogLevel.INFO, "Mermaid rendered successfully");
 
     return { data: base64Image, svg: svgContent };
@@ -397,77 +427,67 @@ async function renderMermaid(
 }
 
 /**
- * Saves a generated Mermaid diagram to a file
+ * Validates the requested output location and returns the resolved folder
  *
- * @param base64Image - The base64-encoded PNG image
  * @param name - The name to use for the file (without extension)
  * @param folder - The folder to save the file in
- * @returns The full path to the saved file
+ * @returns The resolved absolute folder path
  */
-async function saveMermaidImageToFile(
-  base64Image: string,
-  name: string,
-  folder: string
-): Promise<string> {
-  // Create the folder if it doesn't exist
-  if (!fs.existsSync(folder)) {
-    log(LogLevel.INFO, `Creating folder: ${folder}`);
-    fs.mkdirSync(folder, { recursive: true });
+function resolveOutputFolder(name: string, folder: string): string {
+  if (!NAME_PATTERN.test(name)) {
+    throw new Error(
+      "Invalid name: use only letters, digits, '.', '_' and '-' (no path separators, must not start with '.')"
+    );
+  }
+  if (!path.isAbsolute(folder)) {
+    throw new Error("Invalid folder: must be an absolute path");
   }
 
-  // Generate a filename, adding timestamp if file already exists
-  let filename = `${name}.png`;
-  const filePath = path.join(folder, filename);
-
-  if (fs.existsSync(filePath)) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    filename = `${name}-${timestamp}.png`;
-    log(LogLevel.INFO, `File already exists, using filename: ${filename}`);
+  const resolved = path.resolve(folder);
+  if (OUTPUT_DIR) {
+    const relative = path.relative(OUTPUT_DIR, resolved);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`Invalid folder: must be inside ${OUTPUT_DIR}`);
+    }
   }
-
-  // Save the image to the file
-  const imageBuffer = Buffer.from(base64Image, "base64");
-  const fullPath = path.join(folder, filename);
-  fs.writeFileSync(fullPath, imageBuffer);
-
-  log(LogLevel.INFO, `Image saved to: ${fullPath}`);
-  return fullPath;
+  return resolved;
 }
 
 /**
- * Saves a generated Mermaid SVG to a file
+ * Saves generated diagram content to a file, never overwriting an existing one
  *
- * @param svgContent - The SVG content as a string
+ * @param content - The file content (PNG bytes or SVG text)
  * @param name - The name to use for the file (without extension)
  * @param folder - The folder to save the file in
+ * @param extension - The file extension ("png" or "svg")
  * @returns The full path to the saved file
  */
-async function saveMermaidSvgToFile(
-  svgContent: string,
+async function saveMermaidFile(
+  content: Buffer | string,
   name: string,
-  folder: string
+  folder: string,
+  extension: "png" | "svg"
 ): Promise<string> {
+  const resolvedFolder = resolveOutputFolder(name, folder);
+
   // Create the folder if it doesn't exist
-  if (!fs.existsSync(folder)) {
-    log(LogLevel.INFO, `Creating folder: ${folder}`);
-    fs.mkdirSync(folder, { recursive: true });
+  if (!fs.existsSync(resolvedFolder)) {
+    log(LogLevel.INFO, `Creating folder: ${resolvedFolder}`);
+    fs.mkdirSync(resolvedFolder, { recursive: true });
   }
 
   // Generate a filename, adding timestamp if file already exists
-  let filename = `${name}.svg`;
-  const filePath = path.join(folder, filename);
-
-  if (fs.existsSync(filePath)) {
+  let fullPath = path.join(resolvedFolder, `${name}.${extension}`);
+  if (fs.existsSync(fullPath)) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    filename = `${name}-${timestamp}.svg`;
-    log(LogLevel.INFO, `File already exists, using filename: ${filename}`);
+    fullPath = path.join(resolvedFolder, `${name}-${timestamp}.${extension}`);
+    log(LogLevel.INFO, `File already exists, using: ${fullPath}`);
   }
 
-  // Save the SVG to the file
-  const fullPath = path.join(folder, filename);
-  fs.writeFileSync(fullPath, svgContent, "utf-8");
+  // "wx" fails if the path exists (including a symlink), so nothing is overwritten
+  fs.writeFileSync(fullPath, content, { flag: "wx" });
 
-  log(LogLevel.INFO, `SVG saved to: ${fullPath}`);
+  log(LogLevel.INFO, `${extension.toUpperCase()} saved to: ${fullPath}`);
   return fullPath;
 }
 
@@ -535,6 +555,11 @@ async function processGenerateRequest(args: {
           "Folder parameter is required when CONTENT_IMAGE_SUPPORTED is false"
         );
       }
+      if (!args.name) {
+        throw new Error(
+          "Name parameter is required when CONTENT_IMAGE_SUPPORTED is false"
+        );
+      }
 
       // Save the file based on format
       let fullPath: string;
@@ -542,16 +567,18 @@ async function processGenerateRequest(args: {
         if (!result.svg) {
           throw new Error("SVG content not available");
         }
-        fullPath = await saveMermaidSvgToFile(
+        fullPath = await saveMermaidFile(
           result.svg,
           args.name!,
-          args.folder!
+          args.folder!,
+          "svg"
         );
       } else {
-        fullPath = await saveMermaidImageToFile(
-          result.data,
+        fullPath = await saveMermaidFile(
+          Buffer.from(result.data, "base64"),
           args.name!,
-          args.folder!
+          args.folder!,
+          "png"
         );
       }
 
@@ -576,16 +603,18 @@ async function processGenerateRequest(args: {
           if (!result.svg) {
             throw new Error("SVG content not available");
           }
-          fullPath = await saveMermaidSvgToFile(
+          fullPath = await saveMermaidFile(
             result.svg,
             args.name,
-            args.folder
+            args.folder,
+            "svg"
           );
         } else {
-          fullPath = await saveMermaidImageToFile(
-            result.data,
+          fullPath = await saveMermaidFile(
+            Buffer.from(result.data, "base64"),
             args.name,
-            args.folder
+            args.folder,
+            "png"
           );
         }
         savedMessage = `${outputFormat.toUpperCase()} also saved to: ${fullPath}`;
@@ -655,10 +684,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new Error("No arguments provided");
     }
 
-    log(
-      LogLevel.INFO,
-      `Received request: ${name} with args: ${JSON.stringify(args)}`
-    );
+    log(LogLevel.INFO, `Received request: ${name}`);
+    log(LogLevel.DEBUG, `Request args: ${JSON.stringify(args)}`);
 
     if (name === "generate") {
       log(LogLevel.INFO, "Rendering Mermaid PNG");

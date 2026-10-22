@@ -23,5 +23,10 @@ COPY . .
 # Build the TypeScript code
 RUN npm run build
 
+# Drop root. Chromium's sandbox usually can't start inside an unprivileged
+# container, so it is disabled here and the container is the isolation boundary.
+ENV MERMAID_DISABLE_SANDBOX=true
+USER node
+
 # Command to run the MCP server
 CMD [ "node", "dist/index.js" ]
