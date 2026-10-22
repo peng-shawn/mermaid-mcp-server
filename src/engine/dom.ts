@@ -497,8 +497,10 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
           lastSpace = text.endsWith(" ");
           emitted += text.length;
           const font = fontOf(el);
+          // The box uses the primary font's metrics; glyphs from fallback faces
+          // only count through their ink (measured with the face that draws them)
           const { ascent, descent } = fontMetrics(font);
-          const run: Run = { x, y: y + baselineShift(el, font), text, font, fontKey: fontKey(font), owner: el as El, ascent, descent, positioned, ...measureRun(text, font) };
+          const run: Run = { x, y: y + baselineShift(el, font), text, font, fontKey: fontKey(font), owner: el as El, positioned, ...measureRun(text, font), ascent, descent };
           runs.push(run);
           chunk.runs.push(run);
           x += run.width;

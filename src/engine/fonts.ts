@@ -288,14 +288,18 @@ export interface FontMetrics {
 
 const metricsCache = new Map<string, FontMetrics>();
 
-// Blink rounds ascent and descent to whole pixels for layout
+// Blink rounds ascent and descent to whole pixels for layout. Its x-height
+// is the font's own (OS/2 sxHeight, via Skia's fXHeight); measuring a hinted
+// "x" instead is off by up to half a pixel on Linux.
 export function fontMetrics(spec: FontSpec): FontMetrics {
-  const { family } = resolveFont(spec.family, spec.weight, spec.style);
+  const { family, face } = resolveFont(spec.family, spec.weight, spec.style);
   const key = skiaFont(spec, family);
   let m = metricsCache.get(key);
   if (!m) {
     const t = skiaMeasure("x", key);
-    m = { ascent: Math.round(t.fontBoundingBoxAscent), descent: Math.round(t.fontBoundingBoxDescent), xHeight: t.actualBoundingBoxAscent };
+    const font = shaper(face);
+    const xHeight = font?.xHeight ? (font.xHeight * spec.size) / font.unitsPerEm : t.actualBoundingBoxAscent;
+    m = { ascent: Math.round(t.fontBoundingBoxAscent), descent: Math.round(t.fontBoundingBoxDescent), xHeight };
     metricsCache.set(key, m);
   }
   return m;
@@ -359,6 +363,64 @@ export function takeFallbackSeen(): boolean {
   return seen;
 }
 
+// Glyphs the resolved face lacks. Chromium on macOS asks CoreText's cascade,
+// which Skia's own fallback reproduces. Elsewhere it asks fontconfig; we follow
+// fontconfig's usual order, then any installed face that has the glyph.
+const FALLBACK_ORDER = [
+  "DejaVu Sans", "Noto Sans", "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", "Noto Sans CJK TC",
+  "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans Thai", "Noto Sans Symbols",
+  "Noto Sans Symbols 2", "Liberation Sans", "Segoe UI", "Segoe UI Symbol", "Microsoft YaHei", "Yu Gothic",
+  "Malgun Gothic", "Nirmala UI", "Arial Unicode MS",
+];
+const fallbackCache = new Map<string, Face | null>();
+const fallbackFaces = new Set<Face>();
+
+function fallbackFace(cp: number, weight: number, italic: boolean): Face | null {
+  const key = `${cp}|${weight}|${italic}`;
+  const hit = fallbackCache.get(key);
+  if (hit !== undefined) return hit;
+  const index = faces();
+  let found: Face | null = null;
+  for (const name of FALLBACK_ORDER) {
+    const cands = index.get(name.toLowerCase());
+    if (!cands?.length) continue;
+    const face = pickFace(cands, weight, italic);
+    if (shaper(face)?.hasGlyphForCodePoint(cp)) {
+      found = face;
+      break;
+    }
+  }
+  if (!found) {
+    const seen = new Set<string>();
+    outer: for (const list of index.values()) {
+      for (const face of list) {
+        const id = `${face.file}#${face.index}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (shaper(face)?.hasGlyphForCodePoint(cp)) {
+          found = face;
+          break outer;
+        }
+      }
+    }
+  }
+  if (found) fallbackFaces.add(found);
+  fallbackCache.set(key, found);
+  return found;
+}
+
+// Splits a run the resolved face can't draw by the fallback face of each character
+function fallbackRuns(text: string, spec: FontSpec): Array<{ text: string; face: Face | null }> {
+  const out: Array<{ text: string; face: Face | null }> = [];
+  for (const ch of text) {
+    const face = fallbackFace(ch.codePointAt(0)!, spec.weight, spec.style !== "normal");
+    const last = out[out.length - 1];
+    if (last && last.face === face) last.text += ch;
+    else out.push({ text: ch, face });
+  }
+  return out;
+}
+
 export interface RunMetrics {
   width: number; // advance
   inkLeft: number; // relative to the run's start; negative extends left
@@ -385,9 +447,21 @@ export function measureRun(text: string, spec: FontSpec): RunMetrics {
   const emojiFont = emojiFamily();
   const m: RunMetrics = { width: 0, inkLeft: Infinity, inkRight: -Infinity, inkAscent: 0, inkDescent: 0 };
   let x = 0;
+  // Outside macOS, fallback segments are shaped with the face fontconfig would pick
+  const pieces: Array<{ text: string; kind: SegmentKind; face?: Face | null }> = [];
   for (const seg of segments) {
-    const skia = skiaMeasure(seg.text, seg.kind === "emoji" && emojiFont ? `${spec.size}px "${emojiFont}"` : skiaFont(spec, family));
-    const advance = seg.kind === "face" && font ? (font.layout(seg.text).advanceWidth * spec.size) / font.unitsPerEm : skia.width;
+    if (seg.kind === "fallback" && process.platform !== "darwin") for (const r of fallbackRuns(seg.text, spec)) pieces.push({ text: r.text, kind: "fallback", face: r.face });
+    else pieces.push(seg);
+  }
+  for (const seg of pieces) {
+    const fb = seg.face ? shaper(seg.face) : null;
+    const fontStr = seg.kind === "emoji" && emojiFont ? `${spec.size}px "${emojiFont}"` : fb ? skiaFont(spec, seg.face!.families[0]) : skiaFont(spec, family);
+    const skia = skiaMeasure(seg.text, fontStr);
+    let advance = skia.width;
+    if (seg.kind === "face" && font) advance = (font.layout(seg.text).advanceWidth * spec.size) / font.unitsPerEm;
+    else if (fb) {
+      advance = (fb.layout(seg.text).advanceWidth * spec.size) / fb.unitsPerEm;
+    }
     m.inkLeft = Math.min(m.inkLeft, x - skia.actualBoundingBoxLeft);
     // Right ink is the overhang past the last advance, anchored at the shaped
     // end (Skia's own layout of the segment may be unkerned)
@@ -411,6 +485,7 @@ export function resolvedFontFiles(): string[] {
   for (const r of resolveCache.values()) files.add(r.face.file);
   const e = emojiFamily();
   if (e) for (const f of faces().get(e.toLowerCase()) ?? []) files.add(f.file);
+  for (const f of fallbackFaces) files.add(f.file);
   return [...files];
 }
 

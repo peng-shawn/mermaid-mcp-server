@@ -126,7 +126,7 @@ export function createServer(renderer: Renderer, config: Config, version: string
         const v = await renderer.validate(code);
         const doc = docForCode(code);
         const reference = doc ? syntaxUri(doc.slug) : undefined;
-        const text = v.valid ? `Valid ${v.diagramType} diagram.` : `Invalid: ${formatIssue(v.error!)}${reference ? `\nSyntax reference: ${reference}` : ""}`;
+        const text = v.valid ? `Valid ${v.diagramType} diagram.` : `Invalid: ${formatIssue(v.error!)}${guidance(code)}`;
         return { content: [{ type: "text", text }], structuredContent: { valid: v.valid, diagramType: v.diagramType, error: v.error, syntaxReference: reference } };
       } catch (err) {
         return failure(err, code);
@@ -208,6 +208,15 @@ function imageContent(out: RenderOutput, format: "png" | "svg"): Content[] {
   return [{ type: "resource", resource: { uri: "mermaid://render/diagram.svg", mimeType: "image/svg+xml", text: out.svg } }];
 }
 
+// Where to look next: the syntax reference for the diagram's type, or, when
+// the type itself wasn't recognized, the keywords a diagram can start with
+function guidance(code: string): string {
+  const doc = docForCode(code);
+  if (doc) return `\nSyntax reference: ${syntaxUri(doc.slug)}`;
+  const keywords = syntaxDocs().map((d) => d.keywords[0]).filter(Boolean);
+  return `\nA diagram starts with its type, one of: ${keywords.join(", ")}`;
+}
+
 function formatIssue(issue: { message: string; line?: number; column?: number; expected?: string[] }): string {
   const where = issue.line ? `line ${issue.line}${issue.column ? `, column ${issue.column}` : ""}: ` : "";
   const expected = issue.expected?.length ? `\nExpected one of: ${issue.expected.slice(0, 12).join(", ")}` : "";
@@ -217,8 +226,7 @@ function formatIssue(issue: { message: string; line?: number; column?: number; e
 function failure(err: unknown, code: string) {
   let text: string;
   if (err instanceof DiagramSyntaxError) {
-    const doc = docForCode(code);
-    text = `Mermaid syntax error, ${formatIssue(err.issue)}${doc ? `\nSyntax reference: ${syntaxUri(doc.slug)}` : ""}`;
+    text = `Mermaid syntax error, ${formatIssue(err.issue)}${guidance(code)}`;
   } else if (err instanceof OutputPathError || err instanceof RenderTimeoutError) {
     text = err.message;
   } else {
