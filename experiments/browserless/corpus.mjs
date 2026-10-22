@@ -22,5 +22,5 @@ const builtin = {
 import fs from "fs";
 export const cases =
   process.env.CORPUS === "docs"
-    ? JSON.parse(fs.readFileSync(new URL("./corpus-docs.json", import.meta.url), "utf8"))
+    ? JSON.parse(fs.readFileSync(new URL("../../test/accuracy/corpus-docs.json", import.meta.url), "utf8"))
     : builtin;

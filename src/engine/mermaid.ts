@@ -28,7 +28,17 @@ export class MermaidSyntaxError extends Error {
 }
 
 // xorshift32: Mermaid draws random ids (gitGraph commits) and random layout
-// seeds (venn); a fixed sequence per render makes output reproducible
+// seeds (venn); a fixed sequence per render makes output reproducible.
+// Exported as source so the accuracy suite can install it in Chromium too.
+export const SEEDED_RANDOM_SOURCE = `(() => {
+  let s = 0x2545f491;
+  Math.random = () => {
+    s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0;
+    return s / 4294967296;
+  };
+  return () => { s = 0x2545f491; };
+})()`;
+
 function seededRandom(): () => void {
   let s = 0x2545f491;
   const next = () => {
@@ -45,7 +55,9 @@ function seededRandom(): () => void {
   };
 }
 
-function baseConfig(options: DiagramOptions): Record<string, unknown> {
+// The Mermaid configuration every render uses (also used by the accuracy
+// suite to render the same diagrams in Chromium)
+export function mermaidConfig(options: DiagramOptions = {}): Record<string, unknown> {
   const fontFamily = options.fontFamily || DEFAULT_FONT_FAMILY;
   return {
     startOnLoad: false,
@@ -79,13 +91,13 @@ export class MermaidEngine {
     installGlobals(dom.window);
     const resetRandom = seededRandom();
     const mermaid = (await import("mermaid")).default;
-    mermaid.initialize(baseConfig({}));
+    mermaid.initialize(mermaidConfig({}));
     return new MermaidEngine(dom, mermaid, resetRandom);
   }
 
   // Parses without laying out; resolves to the diagram type
   async parse(code: string): Promise<string> {
-    this.mermaid.initialize(baseConfig({}));
+    this.mermaid.initialize(mermaidConfig({}));
     try {
       const result = await this.mermaid.parse(code);
       return result.diagramType;
@@ -96,7 +108,7 @@ export class MermaidEngine {
 
   // Renders to Mermaid's own SVG markup (not yet flattened)
   async render(code: string, options: DiagramOptions): Promise<{ svg: string; diagramType: string }> {
-    this.mermaid.initialize(baseConfig(options));
+    this.mermaid.initialize(mermaidConfig(options));
     let diagramType: string;
     try {
       diagramType = (await this.mermaid.parse(code)).diagramType;
@@ -111,7 +123,7 @@ export class MermaidEngine {
       throw toSyntaxError(err);
     } finally {
       // Mermaid leaves temporary containers behind on failure
-      for (const el of Array.from(this.dom.document.body.children)) el.remove();
+      while (this.dom.document.body.firstChild) this.dom.document.body.firstChild.remove();
     }
   }
 }

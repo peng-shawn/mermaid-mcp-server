@@ -17,7 +17,7 @@ import { JSDOM } from "jsdom";
 import { createCanvas } from "@napi-rs/canvas";
 import { svgPathBbox } from "svg-path-bbox";
 import { svgPathProperties } from "svg-path-properties";
-import { parseInlineStyle, parseSheet, type Declaration, type Rule } from "./css.js";
+import { parseInlineStyle, parseSheet, RuleIndex, type Declaration, type Rule } from "./css.js";
 import { fontMetrics, measureRun, type FontSpec, type RunMetrics } from "./fonts.js";
 import { Matrix, parseTransform, pointsRect, rectEquals, transformRect, union, ZERO_RECT, type Rect } from "./geometry.js";
 
@@ -50,6 +50,7 @@ const NON_RENDERED = new Set([
   "title", "desc", "metadata", "symbol", "script", "filter",
 ]);
 const SHAPES = new Set(["rect", "circle", "ellipse", "line", "polyline", "polygon", "path"]);
+const TEXT_CONTENT = new Set(["text", "tspan", "textPath", "a"]);
 const CONTAINERS = new Set(["g", "a", "svg", "switch"]);
 
 const ABSOLUTE_UNITS: Record<string, number> = { px: 1, pt: 4 / 3, pc: 16, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, q: 96 / 101.6 };
@@ -79,7 +80,6 @@ interface LayoutState {
   box: Rect;
   valid: boolean;
   transform: string;
-  pass: number;
   parent: Node | null;
   kids?: El[];
 }
@@ -113,23 +113,118 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
 
   // ---- invalidation ---------------------------------------------------------
   //
-  // Geometry calls arrive between DOM mutations. takeRecords() tells us
-  // synchronously whether anything changed since the last call; if not, every
-  // cache (styles, matched rules, layout) is still valid.
-  const observer = new window.MutationObserver(() => {});
+  // Geometry calls arrive between DOM mutations, often hundreds per render.
+  // takeRecords() hands us, synchronously, exactly what changed since the
+  // last call, and we invalidate only that, like Blink's dirty bits: style
+  // caches of the touched elements (their subtrees when a class or id changes
+  // which selectors match), and layout of the touched elements plus a
+  // "something below is dirty" mark up their ancestor chain. A layout pass
+  // then only walks dirty paths.
+  // Records reach us two ways: delivered to the callback at microtask
+  // boundaries (Mermaid awaits between DOM changes and geometry calls), or
+  // taken synchronously by sync(). Both must be processed, or changes are lost.
+  const observer = new window.MutationObserver((records: MutationRecord[]) => invalidate(records));
   observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
-  let version = 0;
+  const layout = new WeakMap<Element, LayoutState>();
   let styleCache = new WeakMap<Element, Map<string, string | undefined>>();
   let matchCache = new WeakMap<Element, Rule[]>();
+  let textCache = new WeakMap<Element, Run[]>();
   let sheetRules: Rule[] | null = null;
+  let selectorAttributes = new Set<string>();
+  // Properties declared by any rule; lookups of others skip selector matching
+  let sheetProperties = new Set<string>();
+  let ruleIndex: RuleIndex | null = null;
+  // Bumped when a style sheet changes: every root then re-lays out fully
+  let styleEpoch = 0;
+  const layoutDirty = new WeakSet<Node>();
+  const descendantDirty = new WeakSet<Node>();
+
+  function markLayoutDirty(node: Node | null): void {
+    if (!node) return;
+    layoutDirty.add(node);
+    // Text layout of the enclosing <text> depends on everything inside it
+    const el = node.nodeType === 1 ? (node as Element) : node.parentElement;
+    const text = el && TEXT_CONTENT.has(el.localName) ? el.closest("text") : null;
+    if (text) {
+      textCache.delete(text);
+      layoutDirty.add(text);
+    }
+    for (let p = node.parentNode; p && !descendantDirty.has(p); p = p.parentNode) descendantDirty.add(p);
+  }
+
+  function forgetSubtree(el: Element): void {
+    for (const e of [el, ...Array.from(el.querySelectorAll("*"))]) {
+      styleCache.delete(e);
+      matchCache.delete(e);
+      textCache.delete(e);
+      layout.delete(e);
+      layoutDirty.add(e);
+    }
+  }
+
+  function restyleSubtree(el: Element): void {
+    for (const e of [el, ...Array.from(el.querySelectorAll("*"))]) {
+      styleCache.delete(e);
+      matchCache.delete(e);
+      textCache.delete(e);
+      layoutDirty.add(e);
+    }
+    markLayoutDirty(el);
+  }
+
+  // Whether a mutation record touches a <style> element (or its text)
+  const isStyle = (n: Node | null) => !!n && n.nodeType === 1 && (n as Element).localName === "style";
+  function touchesStyle(r: MutationRecord): boolean {
+    if (isStyle(r.target) || isStyle(r.target.parentNode)) return true;
+    for (const list of [r.addedNodes, r.removedNodes]) {
+      for (let i = 0; i < list.length; i++) {
+        const n = list[i];
+        if (isStyle(n) || (n.nodeType === 1 && (n as Element).firstElementChild && (n as Element).querySelector("style"))) return true;
+      }
+    }
+    return false;
+  }
 
   function sync(): void {
-    if (observer.takeRecords().length === 0) return;
-    version++;
-    styleCache = new WeakMap();
-    matchCache = new WeakMap();
-    sheetRules = null;
+    invalidate(observer.takeRecords());
   }
+
+  function invalidate(records: MutationRecord[]): void {
+    if (!records.length) return;
+    if (records.some(touchesStyle)) {
+      // A style sheet changed: everything may match differently
+      styleCache = new WeakMap();
+      matchCache = new WeakMap();
+      textCache = new WeakMap();
+      sheetRules = null;
+      styleEpoch++;
+    }
+    for (const r of records) {
+      const target = r.target;
+      if (r.type === "attributes") {
+        const el = target as Element;
+        const name = r.attributeName!;
+        if (name === "class" || name === "id" || name === "style" || selectorAttributes.has(name) || INHERITED.has(name)) restyleSubtree(el);
+        else {
+          styleCache.delete(el);
+          markLayoutDirty(el);
+        }
+        // The parent's set of rendered children may change (display, switch)
+        markLayoutDirty(el.parentNode);
+      } else if (r.type === "characterData") {
+        markLayoutDirty(target.parentNode);
+      } else {
+        markLayoutDirty(target);
+        if (r.removedNodes.length) removedFrom.add(target);
+        for (const n of Array.from(r.addedNodes) as Node[]) {
+          if (n.nodeType === 1) forgetSubtree(n as Element);
+          markLayoutDirty(n);
+        }
+      }
+    }
+  }
+  // Containers that lost a child since their last layout
+  const removedFrom = new WeakSet<Node>();
 
   // ---- cascade --------------------------------------------------------------
 
@@ -137,6 +232,10 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
     if (!sheetRules) {
       sheetRules = [];
       for (const style of Array.from(document.querySelectorAll("style"))) sheetRules.push(...parseSheet(style.textContent || ""));
+      // Attribute selectors make those attributes affect matching
+      selectorAttributes = new Set(sheetRules.flatMap((r) => [...r.selector.matchAll(/\[\s*([\w:-]+)/g)].map((m) => m[1])));
+      sheetProperties = new Set(sheetRules.flatMap((r) => [...r.declarations.keys()]));
+      ruleIndex = new RuleIndex(sheetRules);
     }
     return sheetRules;
   }
@@ -144,7 +243,8 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   function matchedRules(el: Element): Rule[] {
     let rules = matchCache.get(el);
     if (!rules) {
-      rules = allRules().filter((r) => {
+      allRules();
+      rules = ruleIndex!.candidates(el).filter((r) => {
         try {
           return el.matches(r.selector);
         } catch {
@@ -164,7 +264,8 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
     if (cache.has(prop)) return cache.get(prop);
     const inline = parseInlineStyle(el.getAttribute("style")).get(prop);
     let best: (Declaration & { rank: number }) | null = null;
-    for (const rule of matchedRules(el)) {
+    allRules();
+    for (const rule of sheetProperties.has(prop) ? matchedRules(el) : []) {
       const d = rule.declarations.get(prop);
       if (!d) continue;
       const rank = rule.specificity * 1e6 + rule.order;
@@ -415,7 +516,11 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   function runsOf(el: Element): Run[] {
     const textEl = el.localName === "text" ? el : el.closest("text");
     if (!textEl) return [];
-    const runs = layoutText(textEl);
+    let runs = textCache.get(textEl);
+    if (!runs) {
+      runs = layoutText(textEl);
+      textCache.set(textEl, runs);
+    }
     return el === textEl ? runs : runs.filter((r) => el.contains(r.owner));
   }
 
@@ -483,7 +588,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
         // A <text> without glyphs but with child elements still has a
         // zero-size box at its origin
         const box = textBox(el);
-        return !box && tag === "text" && el.children.length ? { ...ZERO_RECT } : box;
+        return !box && tag === "text" && el.firstElementChild ? { ...ZERO_RECT } : box;
       }
       case "use": {
         if (el.hasAttribute("width") && el.hasAttribute("height")) {
@@ -503,7 +608,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
 
   // <switch> renders only its first child whose conditions pass
   function switchChoice(sw: Element): Element | null {
-    for (const child of Array.from(sw.children)) {
+    for (let child = sw.firstElementChild; child; child = child.nextElementSibling) {
       if (child.namespaceURI !== SVG_NS) continue;
       if (child.getAttribute("requiredExtensions")?.trim()) continue;
       const lang = child.getAttribute("systemLanguage");
@@ -570,8 +675,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   // history, so we replay the history: each geometry query after a DOM change
   // is a layout pass, and per-element state persists between passes.
 
-  const layout = new WeakMap<Element, LayoutState>();
-  const passes = new WeakMap<Element, { pass: number; version: number }>();
+  const roots = new WeakMap<Element, number>(); // root <svg> -> style epoch of its last pass
 
   function kindOf(el: Element): "shape" | "text" | "leaf" | "container" | "hidden" | null {
     if (el.namespaceURI !== SVG_NS) return null;
@@ -586,24 +690,36 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
 
   function renderedChildren(el: Element): Element[] {
     const only = el.localName === "switch" ? switchChoice(el) : null;
-    return Array.from(el.children).filter((c) => (!only || c === only) && kindOf(c) && specified(c, "display") !== "none");
+    const out: Element[] = [];
+    for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
+      if ((!only || c === only) && kindOf(c) && specified(c, "display") !== "none") out.push(c);
+    }
+    return out;
   }
 
-  // Lays out one element; returns Blink's SVGLayoutResult::bounds_changed
-  function layoutNode(el: Element, pass: number, parentIsNew: boolean): boolean {
+  // Lays out one element; returns Blink's SVGLayoutResult::bounds_changed.
+  // Clean subtrees are skipped: nothing in them changed, so nothing reports.
+  function layoutNode(el: Element, isNew: boolean, full: boolean): boolean {
     const kind = kindOf(el);
     let old = layout.get(el);
-    // A layout object that missed the previous pass or moved is brand new, and
-    // so is everything under it (Blink rebuilds the subtree)
-    if (parentIsNew || (old && (old.pass !== pass - 1 || old.parent !== el.parentNode))) old = undefined;
+    // A layout object that is new (inserted, moved, or shown again) starts from
+    // scratch, and so does everything under it: Blink rebuilds the subtree
+    if (isNew || old?.parent !== el.parentNode) old = undefined;
+    const selfDirty = full || !old || layoutDirty.has(el);
+    const belowDirty = full || !old || descendantDirty.has(el);
+    layoutDirty.delete(el);
+    descendantDirty.delete(el);
+    if (!selfDirty && !belowDirty) return false;
     let box: Rect;
     let valid: boolean;
     let kids: Element[] | undefined;
     if (kind === "container" || kind === "hidden") {
-      kids = renderedChildren(el);
-      let childChanged = false;
-      for (const c of kids) if (layoutNode(c, pass, !old)) childChanged = true;
-      if (old?.kids?.some((k) => !kids!.includes(k))) childChanged = true;
+      kids = selfDirty || !old?.kids ? renderedChildren(el) : old.kids;
+      const now = new Set(kids);
+      const before = new Set(old?.kids ?? []);
+      let childChanged = removedFrom.has(el) || (old?.kids ?? []).some((k) => !now.has(k));
+      removedFrom.delete(el);
+      for (const c of kids) if (layoutNode(c, !old || !before.has(c as El), full)) childChanged = true;
       if (childChanged) {
         let acc: Rect | null = null;
         for (const c of kids) {
@@ -619,13 +735,13 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
       }
     } else {
       const own = ownBox(el);
-      valid = kind === "text" ? !!own || el.children.length > 0 : !!own;
+      valid = kind === "text" ? !!own || !!el.firstElementChild : !!own;
       box = own ?? { ...ZERO_RECT };
     }
     const transform = localTransform(el).key();
     const isLeaf = kind !== "container" && kind !== "hidden";
     const changed = (isLeaf && !old) || !rectEquals(box, old?.box ?? ZERO_RECT) || transform !== (old?.transform ?? "");
-    layout.set(el, { box, valid, transform, pass, parent: el.parentNode, kids: kids as El[] | undefined });
+    layout.set(el, { box, valid, transform, parent: el.parentNode, kids: kids as El[] | undefined });
     return changed;
   }
 
@@ -635,24 +751,21 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
     return root;
   }
 
-  // Brings the layout of the <svg> tree containing `el` up to date. Like
-  // Blink, nothing happens when the DOM hasn't changed since the last pass.
+  // Brings the layout of the <svg> tree containing `el` up to date, walking
+  // only dirty paths
   function flush(el: Element): Element | null {
     const root = outermostSvg(el);
     if (!root?.isConnected) return null;
-    const last = passes.get(root);
-    if (last && last.version === version) return root;
-    const pass = (last?.pass ?? 0) + 1;
-    passes.set(root, { pass, version });
-    layoutNode(root, pass, false);
+    const full = roots.get(root) !== styleEpoch;
+    if (full || layoutDirty.has(root) || descendantDirty.has(root) || !layout.has(root)) {
+      roots.set(root, styleEpoch);
+      layoutNode(root, false, full);
+    }
     return root;
   }
 
   function layoutBox(el: Element): Rect | null {
-    const root = flush(el);
-    if (!root) return null;
-    const st = layout.get(el);
-    return st && st.pass === passes.get(root)!.pass ? st.box : null;
+    return flush(el) ? (layout.get(el)?.box ?? null) : null;
   }
 
   // Union of children without layout history, for content that has no layout
@@ -763,27 +876,33 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
   const nativeComputed = window.getComputedStyle.bind(window);
   const kebab = (p: string) => p.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
   window.getComputedStyle = function (el: Element, pseudo?: string) {
-    const base = nativeComputed(el, pseudo);
     sync();
+    // jsdom's own cascade is slow; it is only consulted for properties we
+    // don't model
+    let native: CSSStyleDeclaration | null = null;
+    const nativeStyle = () => (native ??= nativeComputed(el, pseudo) as CSSStyleDeclaration);
     const resolve = (name: string): string => {
       if (name === "font-size") return `${fontSize(el)}px`;
       if (name === "font-weight") return String(fontWeight(el));
       // Browsers resolve box lengths to "0px", never ""
-      if (/^(padding|margin|border)(-(top|right|bottom|left))?(-width)?$/.test(name)) return base.getPropertyValue(name) || "0px";
+      if (/^(padding|margin|border)(-(top|right|bottom|left))?(-width)?$/.test(name)) return nativeStyle().getPropertyValue(name) || "0px";
       if (name in INITIAL) return computed(el, name);
-      return base.getPropertyValue(name);
+      return nativeStyle().getPropertyValue(name);
     };
-    return new Proxy(base, {
-      get(target, prop) {
+    const declProto = window.CSSStyleDeclaration.prototype;
+    return new Proxy({} as CSSStyleDeclaration, {
+      get(_target, prop) {
         if (prop === "getPropertyValue") return resolve;
-        if (typeof prop === "string" && /^[a-z]/.test(prop) && !(prop in Object.getPrototypeOf(target))) {
-          const v = resolve(kebab(prop));
-          if (v) return v;
+        if (typeof prop === "string" && /^[a-z]/.test(prop)) {
+          const name = kebab(prop);
+          // Properties we model answer from our cascade in either spelling
+          if (name in INITIAL || name === "font-size" || name === "font-weight" || !(prop in declProto)) return resolve(name);
         }
-        if (typeof prop === "string" && ["fontSize", "fontFamily", "fontWeight", "fontStyle", "lineHeight"].includes(prop)) return resolve(kebab(prop));
-        const v = Reflect.get(target, prop, target);
-        return typeof v === "function" ? v.bind(target) : v;
+        const n = nativeStyle();
+        const v = Reflect.get(n, prop, n);
+        return typeof v === "function" ? v.bind(n) : v;
       },
+      getPrototypeOf: () => declProto,
     });
   };
 
