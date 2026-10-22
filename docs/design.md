@@ -103,7 +103,7 @@ MCP client ── stdio ──▶ server (src/server.ts, SDK v2)
                    flatten ─▶ resvg ─▶ PNG / tiles
 ```
 
-Rendering runs in a **child process**, not a worker thread. A Rust panic in a native module calls `abort()` and takes its whole process down (a cropped viewBox once made resvg panic). In a child process that's a failed render and a restart; in the server it would be an outage. It also keeps jsdom's browser globals out of the server, makes a runaway layout killable (`MERMAID_RENDER_TIMEOUT_MS`), and lets the process be recycled to bound jsdom's memory growth. The end-to-end tests kill the child mid-render and expect the next call to succeed.
+Rendering runs in a **child process**, not a worker thread. A Rust panic in a native module calls `abort()` and takes its whole process down (a cropped viewBox once made resvg panic). In a child process that's a failed render and a restart; in the server it would be an outage. It also keeps jsdom's browser globals out of the server, makes a runaway layout killable (`MERMAID_RENDER_TIMEOUT_MS`), and bounds memory: the process runs with a 512 MB V8 heap cap, so V8 collects early instead of growing toward its default limit, and it is recycled every 250 renders. Over 600 renders of the docs corpus, resident memory stays under about 720 MB. The font index reads only each font's name and OS/2 tables; reading whole files (Apple Color Emoji alone is ~180 MB) cost 630 MB of resident memory. The end-to-end tests kill the child mid-render and expect the next call to succeed.
 
 Images returned to a model are capped at 1568 px on the long side; beyond that, vision models downscale anyway. A 470×5981 sequence diagram scaled to fit would be 123 px wide and unreadable, so elongated diagrams are returned as up to six overlapping tiles at a legible scale. The tiles are cut from one raster in pixel space, not by cropping the viewBox, because the cropped viewBox is what made resvg panic.
 
@@ -125,7 +125,7 @@ Warm layout time, against Mermaid in an already running Chromium (`bench/vs-chro
 | 400-node chain | 646 ms | 1.6 s |
 | 40 subgraphs, 400 nodes | 940 ms | 2.3 s |
 
-For typical diagrams the gap doesn't matter: end to end, a server that starts no browser answers in about 110 ms where 0.3 took 1.3 s. On the largest diagrams it does, and 0.3 is faster there (2.6 s against 4.2 s for 40 subgraphs). Profiles of both engines show the same hotspot: Mermaid's `getConfig()` deep-copies the whole configuration on every call. That's 34% of Chromium's time on this diagram, and 40% of ours, where V8 runs it about twice as slowly. That is an upstream fix (memoizing the config) rather than something to patch in Mermaid's bundle.
+For typical diagrams the gap doesn't matter: end to end, a server that starts no browser answers in about 90 ms where 0.3 took 1.3 s. On the largest diagrams it does, and 0.3 is faster there (2.6 s against 4.2 s for 40 subgraphs). Profiles of both engines show the same hotspot: Mermaid's `getConfig()` deep-copies the whole configuration on every call. That's 34% of Chromium's time on this diagram, and 40% of ours, where V8 runs it about twice as slowly. That is an upstream fix (memoizing the config) rather than something to patch in Mermaid's bundle.
 
 ## Protocol
 

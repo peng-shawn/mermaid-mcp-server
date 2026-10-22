@@ -24,6 +24,8 @@ export interface RendererOptions {
   timeoutMs?: number;
   // Restart the worker after this many jobs to bound memory growth in jsdom
   recycleAfter?: number;
+  // V8 heap limit of the render process, in MB
+  heapMb?: number;
   log?: (message: string) => void;
 }
 
@@ -44,11 +46,13 @@ export class Renderer {
   private closed = false;
   private readonly timeoutMs: number;
   private readonly recycleAfter: number;
+  private readonly heapMb: number;
   private readonly log: (message: string) => void;
 
   constructor(options: RendererOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.recycleAfter = options.recycleAfter ?? 250;
+    this.heapMb = options.heapMb ?? 512;
     this.log = options.log ?? (() => {});
   }
 
@@ -87,7 +91,13 @@ export class Renderer {
   private spawn(): Promise<void> {
     return new Promise((resolve, reject) => {
       // stdout is the MCP channel, so the child's stdout is discarded
-      const worker = fork(fileURLToPath(new URL("./worker.js", import.meta.url)), [], { serialization: "advanced", stdio: ["ignore", "ignore", "inherit", "ipc"] });
+      // A capped heap makes V8 collect early instead of growing toward its
+      // default limit; exceeding it is a contained, recoverable crash
+      const worker = fork(fileURLToPath(new URL("./worker.js", import.meta.url)), [], {
+        serialization: "advanced",
+        stdio: ["ignore", "ignore", "inherit", "ipc"],
+        execArgv: [`--max-old-space-size=${this.heapMb}`],
+      });
       this.worker = worker;
       this.jobsOnWorker = 0;
       worker.on("message", (msg: Response) => {

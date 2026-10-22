@@ -7,9 +7,9 @@ Earlier versions drove a headless Chrome. 1.0 runs Mermaid itself in Node on a D
 |                                | 0.3 (Chrome)               | 1.0 (browserless)       |
 | ------------------------------ | -------------------------- | ----------------------- |
 | Install                        | 22 s, 825 MB (576 MB Chrome) | 8 s, 276 MB           |
-| First diagram after start      | 8.1 s                      | 1.6 s                   |
-| Small diagram                  | 1.27 s                     | 0.11 s                  |
-| 8 small diagrams at once       | 5.3 s                      | 0.6 s                   |
+| First diagram after start      | 8.1 s                      | 1.4 s                   |
+| Small diagram                  | 1.27 s                     | 0.09 s                  |
+| 8 small diagrams at once       | 5.3 s                      | 0.4 s                   |
 | 120-message sequence diagram   | 1.7 s                      | 0.5 s                   |
 | 400 nodes in 40 subgraphs      | 2.6 s                      | 4.2 s ([why](docs/design.md#performance)) |
 

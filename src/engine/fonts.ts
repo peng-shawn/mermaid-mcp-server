@@ -77,22 +77,26 @@ function listFontFiles(dir: string, out: string[], depth = 0): void {
   }
 }
 
-// Reads family, weight and slant from an sfnt's name and OS/2 tables. A full
-// font parser per file would make startup slow; this touches a few hundred bytes.
-function readFace(buf: Buffer, offset: number, file: string, index: number, bundled: boolean): Face | null {
-  const numTables = buf.readUInt16BE(offset + 4);
-  const tables = new Map<string, number>();
+// Reads family, weight and slant from an sfnt's name and OS/2 tables, reading
+// only those bytes: fonts can be hundreds of megabytes (color emoji), and
+// reading whole files to index them would cost that much resident memory.
+type Read = (offset: number, length: number) => Buffer;
+
+function readFace(read: Read, offset: number, file: string, index: number, bundled: boolean): Face | null {
+  const numTables = read(offset + 4, 2).readUInt16BE(0);
+  const dir = read(offset + 12, numTables * 16);
+  const tables = new Map<string, { off: number; len: number }>();
   for (let i = 0; i < numTables; i++) {
-    const rec = offset + 12 + i * 16;
-    tables.set(buf.toString("latin1", rec, rec + 4), buf.readUInt32BE(rec + 8));
+    tables.set(dir.toString("latin1", i * 16, i * 16 + 4), { off: dir.readUInt32BE(i * 16 + 8), len: dir.readUInt32BE(i * 16 + 12) });
   }
-  const nameOff = tables.get("name");
-  if (nameOff === undefined) return null;
-  const count = buf.readUInt16BE(nameOff + 2);
-  const strings = nameOff + buf.readUInt16BE(nameOff + 4);
+  const nameTable = tables.get("name");
+  if (!nameTable) return null;
+  const buf = read(nameTable.off, nameTable.len);
+  const count = buf.readUInt16BE(2);
+  const strings = buf.readUInt16BE(4);
   const names: Record<number, string> = {};
   for (let i = 0; i < count; i++) {
-    const r = nameOff + 6 + i * 12;
+    const r = 6 + i * 12;
     const platform = buf.readUInt16BE(r);
     const lang = buf.readUInt16BE(r + 4);
     const id = buf.readUInt16BE(r + 6);
@@ -109,9 +113,10 @@ function readFace(buf: Buffer, offset: number, file: string, index: number, bund
   let weight = 400;
   let italic = false;
   const os2 = tables.get("OS/2");
-  if (os2 !== undefined) {
-    weight = buf.readUInt16BE(os2 + 4);
-    italic = (buf.readUInt16BE(os2 + 62) & 1) === 1;
+  if (os2 && os2.len >= 64) {
+    const t = read(os2.off, 64);
+    weight = t.readUInt16BE(4);
+    italic = (t.readUInt16BE(62) & 1) === 1;
   }
   if (/italic|oblique/i.test(names[17] || names[2] || "")) italic = true;
   const families = [...new Set([names[16], names[1]].filter((n): n is string => !!n))];
@@ -121,16 +126,28 @@ function readFace(buf: Buffer, offset: number, file: string, index: number, bund
 let faceIndex: Map<string, Face[]> | null = null;
 
 function indexFile(file: string, bundled: boolean, into: Map<string, Face[]>): void {
-  let buf: Buffer;
+  let fd: number;
   try {
-    buf = fs.readFileSync(file);
+    fd = fs.openSync(file, "r");
   } catch {
     return;
   }
   try {
-    const offsets = buf.toString("latin1", 0, 4) === "ttcf" ? Array.from({ length: buf.readUInt32BE(8) }, (_, i) => buf.readUInt32BE(12 + i * 4)) : [0];
+    const read: Read = (offset, length) => {
+      const b = Buffer.alloc(length);
+      if (fs.readSync(fd, b, 0, length, offset) < length) throw new Error("truncated font");
+      return b;
+    };
+    const head = read(0, 12);
+    let offsets = [0];
+    if (head.toString("latin1", 0, 4) === "ttcf") {
+      // A collection: the header lists each face's offset
+      const count = head.readUInt32BE(8);
+      const table = read(12, count * 4);
+      offsets = Array.from({ length: count }, (_, i) => table.readUInt32BE(i * 4));
+    }
     offsets.forEach((off, index) => {
-      const face = readFace(buf, off, file, index, bundled);
+      const face = readFace(read, off, file, index, bundled);
       if (!face) return;
       for (const fam of face.families) {
         const key = fam.toLowerCase();
@@ -141,6 +158,8 @@ function indexFile(file: string, bundled: boolean, into: Map<string, Face[]>): v
     });
   } catch {
     // unreadable or not an sfnt
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -478,13 +497,12 @@ export function measureRun(text: string, spec: FontSpec): RunMetrics {
   return m;
 }
 
-// Font files the rasterizer needs: bundled faces, every face resolved so
-// far, and the emoji font
+// Font files the rasterizer needs: bundled faces, every face resolved so far,
+// and fallback faces. Not the emoji font: resvg can't draw bitmap emoji (they
+// are inlined as images), and loading it (~180 MB on macOS) per render is costly.
 export function resolvedFontFiles(): string[] {
   const files = new Set(bundledFontFiles());
   for (const r of resolveCache.values()) files.add(r.face.file);
-  const e = emojiFamily();
-  if (e) for (const f of faces().get(e.toLowerCase()) ?? []) files.add(f.file);
   for (const f of fallbackFaces) files.add(f.file);
   return [...files];
 }
