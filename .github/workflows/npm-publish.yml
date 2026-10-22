@@ -32,6 +32,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish to npm
-        # Authenticates via npm trusted publishing; no token needed
-        run: npm publish --provenance --access public 
+      - name: Stage publish to npm
+        # Authenticates via npm trusted publishing; no token needed.
+        # The staged version goes live only after a maintainer approves it
+        # with 2FA (npm stage approve <stage-id>, or on npmjs.com).
+        run: npm stage publish --provenance --access public 
