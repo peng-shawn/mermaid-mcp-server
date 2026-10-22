@@ -6,12 +6,14 @@ Mermaid is a browser library. Every server-side Mermaid renderer to date either 
 
 On the 520 `mermaid-example` blocks in Mermaid 12.2's own documentation (all 33 diagram types; `test/accuracy/corpus-docs.json`), compared with the same Mermaid build running in Chromium:
 
-| | |
-| --- | --- |
-| Structurally identical SVG (same elements, same attributes) | 520 / 520 |
-| Every coordinate within 0.05 px | 507 (97.5%) |
-| Every coordinate within 1 px | 519 (99.8%), the exception being venn's randomized layout |
-| PNG pixels differing from Chromium's screenshot (share of drawn pixels) | median 0.60%, p90 2.6% |
+| | macOS | Linux |
+| --- | --- | --- |
+| Structurally identical SVG (same elements, same attributes) | 520 / 520 | 520 / 520 |
+| Every coordinate within 0.05 px | 507 (97.5%) | 486 (93.5%) |
+| Every coordinate within 1 px | 519 (99.8%) | 518 (99.6%) |
+| PNG pixels differing from Chromium's screenshot (share of drawn pixels) | median 0.60%, p90 2.6% | |
+
+macOS: Apple Chromium with system fonts. Linux: Debian's Chromium in a container with DejaVu and Liberation fonts. The remaining exceptions are venn's randomized layout and, on Linux, one 2 px offset in an xychart.
 
 The PNG comparison is end to end: our layout, CSS flattening and resvg against Chromium's layout and painting. Most residual pixels are antialiasing and sub-pixel glyph placement.
 
@@ -71,6 +73,8 @@ Each answer became a rule in the engine and a test in `test/engine.test.mjs`.
 **`getBBox` depends on layout history.** Blink keeps a layout object per element. A container recomputes its box only when a child reports `bounds_changed`. A leaf reports that on its first layout and whenever it moves; a container reports it only when its box or transform moves. An empty label created at the origin inside an untransformed group never reports a change, so the group is never valid and never counts toward its ancestors. The same markup can therefore have different boxes depending on the order it was built in. The engine replays this: per-element layout state persists across geometry calls, a node that moves or reappears is rebuilt with its whole subtree, and removed children force a recompute (`bounds_dirty_from_removed_child_`). This fixed a whole class of 8–16 px margin errors in mindmap, state, class, agentflow and usecase diagrams.
 
 **The environment is part of the layout.** Chromium's defaults are a 800×600 viewport with an 8 px body margin; Gantt charts size to their container (784 px), C4 wraps rows at `screen.availWidth`, and an SVG with no font rules inherits the page's default font (Times). jsdom has no `window.CSS`, and Mermaid's fallback color check rejects `Purple` (it compares against the lowercased value).
+
+**Fonts resolve like Chromium's.** A family list resolves to the first installed family. On Linux, fontconfig's metric-compatible substitutes (Arial → Liberation Sans) are accepted and others are not. Generic families follow Chromium's per-platform defaults (Linux: Times New Roman, Arial, Monospace), and a list that matches nothing falls back to the standard font, which is serif. The x-height used by `middle` comes from the font's OS/2 table, not from measuring a hinted "x". Glyphs the face lacks are drawn by a fallback face, CoreText's cascade on macOS and fontconfig's order elsewhere. Their ink counts toward the text box but their metrics don't. Running the suite in a Linux container took Linux from 84.8% to 99.6% within 1 px.
 
 Other rules, verified the same way: CSS custom properties and `!important`; specificity, inline-style parsing that skips empty declarations; `<switch>` renders one child; a nested `<svg>` reports its box in viewBox units and maps it through its viewport; `display:none` subtrees have no geometry; fontconfig's metric aliases (Arial → Liberation Sans) are accepted on Linux, other substitutes are not.
 

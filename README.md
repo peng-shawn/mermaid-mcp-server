@@ -2,7 +2,7 @@
 
 An MCP server that renders [Mermaid](https://mermaid.js.org) diagrams to PNG and SVG, and checks their syntax, using the official Mermaid library. **No browser required.**
 
-Earlier versions drove a headless Chrome. 1.0 runs Mermaid itself in Node on a DOM whose geometry answers match Chromium's, and draws PNGs with [resvg](https://github.com/linebender/resvg). Measured against Chromium on the 520 examples in Mermaid's own documentation, the layouts are structurally identical, 99.8% are within 1px, and the PNGs differ from Chromium's screenshots in a median 0.6% of drawn pixels. See [how it works](docs/design.md).
+Earlier versions drove a headless Chrome. 1.0 runs Mermaid itself in Node on a DOM whose geometry answers match Chromium's, and draws PNGs with [resvg](https://github.com/linebender/resvg). Measured against Chromium on the 520 examples in Mermaid's own documentation, the layouts are structurally identical, 99.8% are within 1px (99.6% on Linux), and the PNGs differ from Chromium's screenshots in a median 0.6% of drawn pixels. See [how it works](docs/design.md).
 
 |                                | 0.3 (Chrome)               | 1.0 (browserless)       |
 | ------------------------------ | -------------------------- | ----------------------- |
