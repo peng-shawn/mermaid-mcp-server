@@ -134,15 +134,27 @@ function fontMetrics(font) {
   return m;
 }
 
-function textWidth(text, font) {
+// Advance width plus ink extents of a run of text
+function measureRun(text, font) {
   const key = fontString(font) + "\u0000" + text;
-  let w = widthCache.get(key);
-  if (w === undefined) {
+  let m = widthCache.get(key);
+  if (m === undefined) {
     measureCtx.font = fontString(font);
-    w = measureCtx.measureText(text).width;
-    widthCache.set(key, w);
+    const t = measureCtx.measureText(text);
+    m = {
+      width: t.width,
+      inkLeft: -t.actualBoundingBoxLeft,
+      inkRight: t.actualBoundingBoxRight,
+      inkAscent: t.actualBoundingBoxAscent,
+      inkDescent: t.actualBoundingBoxDescent,
+    };
+    widthCache.set(key, m);
   }
-  return w;
+  return m;
+}
+
+function textWidth(text, font) {
+  return measureRun(text, font).width;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,10 +210,20 @@ function parseSheet(text) {
 // ---------------------------------------------------------------------------
 // The geometry engine bound to one jsdom window
 
-export function createDom({ width = 784, height = 600 } = {}) {
+// The virtual viewport matches headless Chromium's defaults (800x600, 8px body
+// margin). A few diagram types read it: gantt sizes to its container and C4
+// wraps rows at screen.availWidth.
+export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
+  const width = viewportWidth - 16;
+  const height = viewportHeight;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
   const window = dom.window;
   const { document } = window;
+  for (const [k, v] of Object.entries({ width: viewportWidth, height: viewportHeight, availWidth: viewportWidth, availHeight: viewportHeight })) {
+    Object.defineProperty(window.screen, k, { value: v, configurable: true });
+  }
+  Object.defineProperty(window, "innerWidth", { value: viewportWidth, configurable: true });
+  Object.defineProperty(window, "innerHeight", { value: viewportHeight, configurable: true });
 
   // Per-render caches; cleared whenever the document changes
   let generation = 0;
@@ -268,14 +290,33 @@ export function createDom({ width = 784, height = 600 } = {}) {
     return prop === "font-size" ? 16 : INITIAL[prop];
   }
 
-  function fontSizePx(el, v) {
-    const n = parseFloat(v);
-    if (Number.isNaN(n)) return 16;
-    if (/em$/.test(v) || /%$/.test(v)) {
-      const parentSize = el.parentNode && el.parentNode.nodeType === 1 ? computed(el.parentNode, "font-size") : 16;
-      return /%$/.test(v) ? (parentSize * n) / 100 : parentSize * n;
-    }
+  // CSS length to px. `fontEl` supplies the font for em/ex/ch: for font-size
+  // itself that is the parent, for every other property the element itself.
+  const ABSOLUTE = { px: 1, pt: 4 / 3, pc: 16, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, q: 96 / 101.6 };
+  const KEYWORD_SIZES = { "xx-small": 9, "x-small": 10, small: 13, medium: 16, large: 18, "x-large": 24, "xx-large": 32 };
+  function toPx(v, fontEl, percentBase) {
+    const m = /^(-?[\d.]+(?:e[-+]?\d+)?)([a-z%]*)$/i.exec(String(v).trim());
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    const unit = m[2].toLowerCase();
+    if (!unit) return n;
+    if (unit in ABSOLUTE) return n * ABSOLUTE[unit];
+    if (unit === "%") return (n / 100) * percentBase();
+    if (unit === "rem") return n * 16;
+    if (unit === "vw") return (n / 100) * width;
+    if (unit === "vh") return (n / 100) * height;
+    const font = fontEl ? fontOf(fontEl) : { size: 16, family: INITIAL["font-family"], weight: "400", style: "normal" };
+    if (unit === "em") return n * font.size;
+    if (unit === "ex") return n * fontMetrics(font).xHeight;
+    if (unit === "ch") return n * measureRun("0", font).width;
     return n;
+  }
+
+  function fontSizePx(el, v) {
+    if (v in KEYWORD_SIZES) return KEYWORD_SIZES[v];
+    const parent = el.parentNode && el.parentNode.nodeType === 1 ? el.parentNode : null;
+    const px = toPx(v, parent, () => (parent ? computed(parent, "font-size") : 16));
+    return px === null || Number.isNaN(px) ? 16 : px;
   }
 
   function fontOf(el) {
@@ -292,12 +333,8 @@ export function createDom({ width = 784, height = 600 } = {}) {
 
   function length(el, value, axis = "x") {
     if (value === null || value === undefined || value === "") return 0;
-    const v = String(value).trim();
-    const n = parseFloat(v);
-    if (Number.isNaN(n)) return 0;
-    if (v.endsWith("em")) return n * computed(el, "font-size");
-    if (v.endsWith("%")) return (n / 100) * (axis === "x" ? width : height);
-    return n;
+    const px = toPx(value, el, () => (axis === "x" ? width : height));
+    return px === null || Number.isNaN(px) ? parseFloat(value) || 0 : px;
   }
 
   // SVG list attributes on <text>/<tspan> (x="1 2 3"); we only use the first value
@@ -310,9 +347,13 @@ export function createDom({ width = 784, height = 600 } = {}) {
 
   // ---- text layout --------------------------------------------------------
 
+  // Baseline offsets measured from Chromium (baseline-probe.mjs). text-top and
+  // text-bottom have no effect, and before-/after-edge only work as
+  // alignment-baseline on a tspan.
   function baselineShift(el, font) {
     let mode = el.localName === "tspan" ? specified(el, "alignment-baseline") : undefined;
-    if (!mode || mode === "auto" || mode === "baseline") mode = computed(el, "dominant-baseline");
+    const fromAlignment = !!mode && mode !== "auto" && mode !== "baseline";
+    if (!fromAlignment) mode = computed(el, "dominant-baseline");
     const { ascent, descent, xHeight } = fontMetrics(font);
     switch (mode) {
       case "middle":
@@ -324,50 +365,63 @@ export function createDom({ width = 784, height = 600 } = {}) {
       case "mathematical":
         return ascent / 2;
       case "text-before-edge":
-      case "before-edge":
-      case "text-top":
         return ascent;
       case "text-after-edge":
-      case "after-edge":
       case "ideographic":
-      case "text-bottom":
         return -descent;
+      case "before-edge":
+        return fromAlignment ? ascent : 0;
+      case "after-edge":
+        return fromAlignment ? -descent : 0;
       default:
         return 0;
     }
   }
 
-  // Lays out a <text> element into positioned runs, following SVG 1.1 text
-  // chunk rules: absolute x starts a new chunk, text-anchor aligns each chunk.
+  // Lays out a <text> element into positioned runs of glyphs.
+  //
+  // Positioning attributes (x, y, dx, dy) address characters: each applies to
+  // the first character inside its element, and when nested elements address
+  // the same character the innermost one wins. An absolute x starts a new text
+  // chunk, and text-anchor aligns each chunk as a whole.
   function layoutText(textEl) {
     const runs = [];
     const chunks = [];
     let chunk = null;
-    const st = { x: 0, y: 0, lastSpace: true };
+    const st = { x: 0, y: 0, lastSpace: true, emitted: 0 };
+    let pending = {};
 
-    function startChunk(anchorEl) {
-      chunk = { anchor: computed(anchorEl, "text-anchor"), runs: [] };
-      chunks.push(chunk);
+    function enter(el) {
+      for (const [name, axis] of [["x", "x"], ["y", "y"], ["dx", "x"], ["dy", "y"]]) {
+        const v = firstLength(el, name, axis);
+        if (v !== null) {
+          pending[name] = v;
+          if (name === "x") pending.anchorEl = el;
+        }
+      }
     }
 
-    function position(el) {
-      const x = firstLength(el, "x", "x");
-      const y = firstLength(el, "y", "y");
-      if (x !== null) {
-        st.x = x;
-        startChunk(el);
+    function applyPending(el) {
+      if (pending.x !== undefined) {
+        st.x = pending.x;
+        chunk = { anchor: computed(pending.anchorEl, "text-anchor"), runs: [] };
+        chunks.push(chunk);
       }
-      if (y !== null) st.y = y;
-      const dx = firstLength(el, "dx", "x");
-      const dy = firstLength(el, "dy", "y");
-      if (dx !== null) st.x += dx;
-      if (dy !== null) st.y += dy;
+      if (pending.y !== undefined) st.y = pending.y;
+      if (pending.dx !== undefined) st.x += pending.dx;
+      if (pending.dy !== undefined) st.y += pending.dy;
+      pending = {};
+      if (!chunk) {
+        chunk = { anchor: computed(textEl, "text-anchor"), runs: [] };
+        chunks.push(chunk);
+      }
     }
 
     function walk(el) {
       if (specified(el, "display") === "none") return;
-      position(el);
-      if (!chunk) startChunk(el);
+      const saved = { ...pending };
+      const emittedBefore = st.emitted;
+      enter(el);
       for (const child of el.childNodes) {
         if (child.nodeType === 3) {
           const preserve = el.getAttribute("xml:space") === "preserve" || computed(el, "white-space") === "pre";
@@ -377,28 +431,28 @@ export function createDom({ width = 784, height = 600 } = {}) {
             if (st.lastSpace) text = text.replace(/^ /, "");
           }
           if (!text) continue;
+          applyPending(el);
           st.lastSpace = text.endsWith(" ");
+          st.emitted += text.length;
           const font = fontOf(el);
-          const w = textWidth(text, font);
           const { ascent, descent } = fontMetrics(font);
-          const shift = baselineShift(el, font);
-          const run = { x: st.x, y: st.y + shift, width: w, ascent, descent, text, font };
+          const run = { x: st.x, y: st.y + baselineShift(el, font), text, font, owner: el, ascent, descent, ...measureRun(text, font) };
           runs.push(run);
           chunk.runs.push(run);
-          st.x += w;
+          st.x += run.width;
         } else if (child.nodeType === 1 && (child.localName === "tspan" || child.localName === "a" || child.localName === "textPath")) {
           walk(child);
         }
       }
+      // Attributes on an element that contained no characters address nothing
+      if (st.emitted === emittedBefore) pending = saved;
     }
     walk(textEl);
 
-    // Trailing collapsible space does not take up room
+    // A trailing collapsible space takes no room
     const last = runs[runs.length - 1];
     if (last && last.text.endsWith(" ") && computed(textEl, "white-space") !== "pre") {
-      const trimmed = last.text.slice(0, -1);
-      last.width = textWidth(trimmed, last.font);
-      last.text = trimmed;
+      Object.assign(last, measureRun(last.text.slice(0, -1), last.font), { text: last.text.slice(0, -1) });
     }
 
     for (const c of chunks) {
@@ -408,45 +462,33 @@ export function createDom({ width = 784, height = 600 } = {}) {
       const shift = c.anchor === "middle" ? (right - left) / 2 : right - left;
       for (const r of c.runs) r.x -= shift;
     }
-    return runs;
+    return runs.filter((r) => r.text);
   }
 
-  function textBBox(el) {
-    // getBBox on a tspan reports that tspan's runs within its <text>
+  function runsOf(el) {
     const textEl = el.localName === "text" ? el : el.closest("text");
-    if (!textEl) return null;
-    const runs = layoutText(textEl).filter((r) => el === textEl || isInside(r, el, textEl));
+    if (!textEl) return [];
+    const runs = layoutText(textEl);
+    if (el === textEl) return runs;
+    return runs.filter((r) => el.contains(r.owner));
+  }
+
+  // Blink's text box is the union of the font box (rounded ascent/descent,
+  // advance width) and the glyphs' actual ink (verified with fontprobe2.mjs)
+  function textBBox(el) {
     let box = null;
-    for (const r of runs) box = unionRect(box, { x: r.x, y: r.y - r.ascent, width: r.width, height: r.ascent + r.descent });
+    for (const r of runsOf(el)) {
+      const left = r.x + Math.min(0, r.inkLeft);
+      const right = r.x + Math.max(r.width, r.inkRight);
+      const top = r.y - Math.max(r.ascent, r.inkAscent);
+      const bottom = r.y + Math.max(r.descent, r.inkDescent);
+      box = unionRect(box, { x: left, y: top, width: right - left, height: bottom - top });
+    }
     return box;
   }
 
-  // Map each run back to the element that owns it
-  function isInside(run, el, textEl) {
-    if (!run.owner) annotateOwners(textEl);
-    for (let e = run.owner; e && e !== textEl; e = e.parentNode) if (e === el) return true;
-    return false;
-  }
-  function annotateOwners(textEl) {
-    const runs = layoutText(textEl);
-    let i = 0;
-    (function walk(el) {
-      for (const child of el.childNodes) {
-        if (child.nodeType === 3 && i < runs.length && child.data.trim()) runs[i++].owner = el;
-        else if (child.nodeType === 1) walk(child);
-      }
-    })(textEl);
-    return runs;
-  }
-
   function textLength(el) {
-    const textEl = el.localName === "text" ? el : el.closest("text");
-    if (!textEl) return 0;
-    const runs = el === textEl ? layoutText(textEl) : annotateOwners(textEl).filter((r) => {
-      for (let e = r.owner; e && e !== textEl; e = e.parentNode) if (e === el) return true;
-      return false;
-    });
-    return runs.reduce((s, r) => s + r.width, 0);
+    return runsOf(el).reduce((s, r) => s + r.width, 0);
   }
 
   // ---- shapes -------------------------------------------------------------
@@ -529,9 +571,8 @@ export function createDom({ width = 784, height = 600 } = {}) {
         return transformRect(inner, new Matrix(1, 0, 0, 1, num(el, "x", "x"), num(el, "y", "y")));
       }
       case "svg":
-        if (el.parentNode && el.parentNode.namespaceURI === SVG_NS && el.hasAttribute("width") && el.hasAttribute("height")) {
-          return { x: num(el, "x", "x"), y: num(el, "y", "y"), width: num(el, "width", "x"), height: num(el, "height", "y") };
-        }
+        // A nested <svg> reports its contents in its own (viewBox) units; the
+        // viewport mapping is part of its transform to the parent
         return containerBBox(el);
       default:
         return containerBBox(el);
@@ -541,9 +582,35 @@ export function createDom({ width = 784, height = 600 } = {}) {
   // Matches Blink (verified with blink-probe.mjs): empty shapes (zero-size
   // rects, empty text, paths without segments) are skipped, while degenerate
   // but non-empty geometry such as a single-point path still counts.
+  // <switch> renders only its first child whose conditions pass
+  function switchChoice(sw) {
+    for (const child of sw.children) {
+      if (child.namespaceURI !== SVG_NS) continue;
+      if (child.hasAttribute("requiredExtensions") && child.getAttribute("requiredExtensions").trim()) continue;
+      const lang = child.getAttribute("systemLanguage");
+      if (lang !== null && !lang.split(",").some((l) => /^en\b/i.test(l.trim()))) continue;
+      return child;
+    }
+    return null;
+  }
+
+  // Elements outside the render tree (display:none, unchosen <switch> branches,
+  // resources such as <defs>) have no geometry; getBBox reports zeros for them
+  function rendered(el) {
+    for (let e = el; e && e.namespaceURI === SVG_NS; e = e.parentNode) {
+      if (specified(e, "display") === "none") return false;
+      if (NON_RENDERED.has(e.localName) && e !== el) return false;
+      const parent = e.parentNode;
+      if (parent && parent.localName === "switch" && switchChoice(parent) !== e) return false;
+    }
+    return true;
+  }
+
   function containerBBox(el) {
     let box = null;
+    const only = el.localName === "switch" ? switchChoice(el) : null;
     for (const child of el.children) {
+      if (el.localName === "switch" && child !== only) continue;
       if (child.namespaceURI !== SVG_NS) continue;
       if (specified(child, "display") === "none") continue;
       const b = ownBBox(child);
@@ -559,10 +626,35 @@ export function createDom({ width = 784, height = 600 } = {}) {
   }
 
   function localTransform(el) {
+    if (el.localName === "svg" && el.parentNode && el.parentNode.namespaceURI === SVG_NS) return viewportTransform(el);
     let t = el.getAttribute("transform");
     const css = el.style?.getPropertyValue?.("transform");
     if (css && css !== "none") t = css;
     return parseTransform(t);
+  }
+
+  // x/y offset plus the viewBox-to-viewport mapping of a nested <svg>
+  function viewportTransform(el) {
+    const x = num(el, "x", "x"), y = num(el, "y", "y");
+    const w = el.hasAttribute("width") ? num(el, "width", "x") : width;
+    const h = el.hasAttribute("height") ? num(el, "height", "y") : height;
+    let m = new Matrix(1, 0, 0, 1, x, y);
+    const vb = (el.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+    if (vb.length !== 4 || vb.some(Number.isNaN) || vb[2] <= 0 || vb[3] <= 0) return m;
+    const [vx, vy, vw, vh] = vb;
+    const par = (el.getAttribute("preserveAspectRatio") || "xMidYMid meet").trim().split(/\s+/);
+    let sx = w / vw, sy = h / vh;
+    let tx = -vx * sx, ty = -vy * sy;
+    if (par[0] !== "none") {
+      const s = par[1] === "slice" ? Math.max(sx, sy) : Math.min(sx, sy);
+      sx = sy = s;
+      const align = par[0];
+      const fx = /xMid/.test(align) ? 0.5 : /xMax/.test(align) ? 1 : 0;
+      const fy = /YMid/.test(align) ? 0.5 : /YMax/.test(align) ? 1 : 0;
+      tx = -vx * s + (w - vw * s) * fx;
+      ty = -vy * s + (h - vh * s) * fy;
+    }
+    return m.multiply(new Matrix(sx, 0, 0, sy, tx, ty));
   }
 
   // Transform from the element's user space to the outermost <svg>'s user space
@@ -588,7 +680,7 @@ export function createDom({ width = 784, height = 600 } = {}) {
   // An SVGRect has only x/y/width/height; Mermaid relies on `left` being absent
   proto.getBBox = function () {
     fresh();
-    const b = ownBBox(this) || ZERO;
+    const b = (rendered(this) && ownBBox(this)) || ZERO;
     return { x: b.x, y: b.y, width: b.width, height: b.height };
   };
   proto.getComputedTextLength = function () {
@@ -657,13 +749,20 @@ export function createDom({ width = 784, height = 600 } = {}) {
     return htmlRect.call(this);
   };
 
-  // Block-level HTML containers take the full layout width
+  // Block-level HTML containers take the full layout width; anything hidden
+  // with display:none (or detached) has no box, as in a browser
   const BLOCK = new Set(["div", "body", "html", "section", "main", "pre"]);
+  function hidden(el) {
+    if (!el.isConnected) return true;
+    for (let e = el; e && e.nodeType === 1; e = e.parentNode) if (specified(e, "display") === "none") return true;
+    return false;
+  }
   for (const [prop, size] of [["offsetWidth", () => width], ["clientWidth", () => width], ["offsetHeight", () => 0], ["clientHeight", () => 0]]) {
     Object.defineProperty(window.HTMLElement.prototype, prop, {
       configurable: true,
       get() {
-        return BLOCK.has(this.localName) ? size() : 0;
+        fresh();
+        return BLOCK.has(this.localName) && !hidden(this) ? size() : 0;
       },
     });
   }
@@ -676,6 +775,11 @@ export function createDom({ width = 784, height = 600 } = {}) {
     fresh();
     const resolve = (name) => {
       if (name === "font-size") return computed(el, "font-size") + "px";
+      // Browsers resolve box lengths to "0px", never ""
+      if (/^(padding|margin|border)(-(top|right|bottom|left))?(-width)?$/.test(name)) {
+        const v = base.getPropertyValue(name);
+        return v === "" ? "0px" : v;
+      }
       if (name in INITIAL || name === "font-family" || name === "font-weight") {
         const v = computed(el, name);
         return v === undefined ? "" : String(v);
@@ -695,14 +799,42 @@ export function createDom({ width = 784, height = 600 } = {}) {
     });
   };
 
-  // Canvas 2D (cytoscape and some diagrams measure text with it)
+  // Canvas 2D: diagrams only *measure* text with it (cytoscape also paints
+  // into it, which nobody sees), so measurement is real and drawing is a no-op
   window.HTMLCanvasElement.prototype.getContext = function (type) {
     if (type !== "2d") return null;
-    if (!this.__ctx) this.__ctx = createCanvas(Math.max(1, this.width || 300), Math.max(1, this.height || 150)).getContext("2d");
+    if (!this.__ctx) this.__ctx = measuringContext();
     return this.__ctx;
   };
 
   return { window, document, font: { fontMetrics, textWidth }, internals: { ownBBox, layoutText, computed } };
+}
+
+// A CanvasRenderingContext2D whose text measurement is real (Skia) and whose
+// drawing calls do nothing
+function measuringContext() {
+  const ctx = createCanvas(1, 1).getContext("2d");
+  const state = { font: "10px sans-serif" };
+  const noop = new Proxy(function () {}, {
+    get: (_, p) => (p === Symbol.toPrimitive ? () => "" : noop),
+    apply: () => noop,
+  });
+  return new Proxy(
+    {},
+    {
+      get(_, prop) {
+        if (prop === "measureText") return (text) => { ctx.font = state.font; return ctx.measureText(String(text)); };
+        if (prop === "canvas") return undefined;
+        if (prop in state) return state[prop];
+        if (prop === "getImageData") return (x, y, w, h) => ({ data: new Uint8ClampedArray(Math.max(0, w * h * 4)), width: w, height: h });
+        return noop;
+      },
+      set(_, prop, value) {
+        state[prop] = value;
+        return true;
+      },
+    }
+  );
 }
 
 // Expose a window's globals the way a browser would, without clobbering Node's own
