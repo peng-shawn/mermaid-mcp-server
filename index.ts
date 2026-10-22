@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import puppeteer from "puppeteer";
+import puppeteer, { type Page } from "puppeteer";
 import path from "path";
 import url from "url";
 import fs from "fs";
@@ -237,7 +237,7 @@ async function renderMermaid(
   });
 
   // Declare page outside try block so it's accessible in catch and finally
-  let page: puppeteer.Page | null = null;
+  let page: Page | null = null;
   // Store console messages for error reporting
   const consoleMessages: string[] = [];
 
