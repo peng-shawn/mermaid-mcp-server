@@ -1,0 +1,7 @@
+node_modules
+dist
+experiments
+test/accuracy/.oracle
+test/accuracy/.pixels
+.git
+*.tgz

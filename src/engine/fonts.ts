@@ -174,6 +174,20 @@ const GENERIC: Record<string, Record<string, string[]>> = {
   },
 };
 
+// Metric-compatible substitutes (fontconfig's 30-metric-aliases), which
+// Chromium on Linux accepts for a named family that isn't installed; any other
+// substitute makes it move on to the next family in the list
+const METRIC_ALIASES: Record<string, string[]> = {
+  arial: ["Liberation Sans", "Arimo"],
+  helvetica: ["Liberation Sans", "Arimo"],
+  "times new roman": ["Liberation Serif", "Tinos"],
+  times: ["Liberation Serif", "Tinos"],
+  "courier new": ["Liberation Mono", "Cousine"],
+  courier: ["Liberation Mono", "Cousine"],
+  calibri: ["Carlito"],
+  cambria: ["Caladea"],
+};
+
 function splitFamilies(list: string): string[] {
   return list
     .split(",")
@@ -218,7 +232,7 @@ export function resolveFont(familyList: string, weight: number, style: string): 
   for (const fam of splitFamilies(familyList)) {
     const lower = fam.toLowerCase();
     if (lower === "monospace") wantsMono = true;
-    const names = generic[lower] ?? [fam];
+    const names = generic[lower] ?? [fam, ...(METRIC_ALIASES[lower] ?? [])];
     for (const name of names) {
       const cands = index.get(name.toLowerCase())?.filter((f) => !f.bundled || generic[lower]);
       if (cands?.length) {
