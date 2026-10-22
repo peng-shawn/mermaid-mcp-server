@@ -278,9 +278,26 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 }: DomOpti
     else if (best) value = best.value;
     else if (el.namespaceURI === SVG_NS && el.hasAttribute(prop)) value = el.getAttribute(prop) ?? undefined;
     value = value?.replace(/\s*!important\s*$/, "").trim();
+    if (value?.includes("var(") && !prop.startsWith("--")) value = substituteVars(el, value);
     if (value === "inherit" || value === "") value = undefined;
     cache.set(prop, value);
     return value;
+  }
+
+  // var() substitution with inherited custom properties. A reference that
+  // can't be resolved makes the declaration invalid at computed-value time,
+  // so the property behaves as unset (inherits, or takes its initial value).
+  function substituteVars(el: Element, value: string, depth = 0): string | undefined {
+    let invalid = false;
+    const out = value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_m, name: string, fallback?: string) => {
+      let v: string | undefined;
+      for (let e: Element | null = el; e && v === undefined; e = parentElement(e)) v = specified(e, name);
+      v ??= fallback?.trim();
+      if (v === undefined) invalid = true;
+      return v ?? "";
+    });
+    if (invalid) return undefined;
+    return out.includes("var(") && depth < 8 ? substituteVars(el, out, depth + 1) : out;
   }
 
   function computed(el: Element, prop: string): string {

@@ -54,14 +54,14 @@ export function flattenSvg(dom: GeometryDom, markup: string, options: FlattenOpt
       const out = new Map<string, string>();
       for (const prop of new Set([...sheetProps, ...inline.keys()])) {
         if (!PRESENTATION.has(prop)) continue;
+        // Custom properties are already substituted by the cascade
         let v = dom.specified(el, prop);
         if (v === undefined) continue;
-        v = resolveVars(dom, el, v);
         if (prop === "font-weight") v = String(dom.fontOf(el).weight);
         else if (prop === "font-family") {
           const font = dom.fontOf(el);
           v = `"${concreteFamily(v, font.weight, font.style)}", ${v}`;
-        } else if (COLOR_PROPS.has(prop) && /currentcolor/i.test(v)) v = resolveVars(dom, el, dom.computed(el, "color") || "black");
+        } else if (COLOR_PROPS.has(prop) && /currentcolor/i.test(v)) v = dom.computed(el, "color") || "black";
         // A CSS transform from a sheet would override the attribute Mermaid
         // positions elements with; only inline CSS transforms win
         if (prop === "transform" && !inline.has("transform")) continue;
@@ -103,19 +103,4 @@ function declaredProperties(root: Element): Set<string> {
     for (const [, name] of (style.textContent || "").matchAll(/([a-z-]+)\s*:/g)) props.add(name);
   }
   return props;
-}
-
-function customProperty(dom: GeometryDom, el: Element, name: string): string | undefined {
-  for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
-    const v = dom.specified(e as Element, name);
-    if (v !== undefined) return v;
-  }
-  return undefined;
-}
-
-function resolveVars(dom: GeometryDom, el: Element, value: string, depth = 0): string {
-  if (!value.includes("var(") || depth > 8) return value;
-  return value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\))?[^()]*))?\)/g, (_m, name: string, fallback?: string) =>
-    resolveVars(dom, el, (customProperty(dom, el, name) ?? fallback ?? "").trim(), depth + 1)
-  );
 }
