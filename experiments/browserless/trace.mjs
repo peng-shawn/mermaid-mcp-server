@@ -24,6 +24,7 @@ function instrument(win, out) {
   const summarize = (r) => {
     if (r && typeof r === "object") {
       if ("a" in r && "f" in r) return [r.a, r.b, r.c, r.d, r.e, r.f].map(round).join(",");
+      if ("x" in r && "y" in r && !("width" in r)) return [r.x, r.y].map(round).join(",");
       return ["x", "y", "width", "height"].map((k) => round(r[k])).join(",");
     }
     return round(r);
@@ -42,6 +43,10 @@ function instrument(win, out) {
   wrap(win.SVGTextContentElement ? win.SVGTextContentElement.prototype : win.SVGElement.prototype, "getComputedTextLength");
   wrap(win.SVGGeometryElement ? win.SVGGeometryElement.prototype : win.SVGElement.prototype, "getTotalLength");
   wrap(win.Element.prototype, "getBoundingClientRect");
+  const geo = win.SVGGeometryElement ? win.SVGGeometryElement.prototype : win.SVGElement.prototype;
+  for (const fn of ["getPointAtLength", "isPointInFill", "isPointInStroke"]) wrap(geo, fn);
+  const gfx = win.SVGGraphicsElement ? win.SVGGraphicsElement.prototype : win.SVGElement.prototype;
+  for (const fn of ["getCTM", "getScreenCTM"]) wrap(gfx, fn);
 }
 
 const browser = await puppeteer.launch({ headless: true });

@@ -491,7 +491,9 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
       for (const child of el.childNodes) {
         if (child.nodeType === 3) {
           const preserve = el.getAttribute("xml:space") === "preserve" || computed(el, "white-space") === "pre";
-          let text = child.data.replace(/[\n\r]/g, preserve ? " " : "").replace(/\t/g, " ");
+          // Chromium applies CSS white-space processing to SVG text: newlines
+          // and tabs become spaces (SVG 1.1 deleted newlines instead)
+          let text = child.data.replace(/\r\n?|\n|\t/g, " ");
           if (!preserve) {
             text = text.replace(/ +/g, " ");
             if (st.lastSpace) text = text.replace(/^ /, "");
@@ -884,15 +886,19 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
   };
 
   // An SVGRect has only x/y/width/height; Mermaid relies on `left` being absent
+  // SVG geometry interfaces are single precision in Blink (SVGRect, float
+  // lengths). Mermaid compares coordinates exactly when deduplicating points,
+  // so the float32 rounding is observable and we reproduce it.
+  const f32 = Math.fround;
   proto.getBBox = function () {
     fresh();
     flush(this);
     const b = (rendered(this) && ownBBox(this)) || ZERO;
-    return { x: b.x, y: b.y, width: b.width, height: b.height };
+    return { x: f32(b.x), y: f32(b.y), width: f32(b.width), height: f32(b.height) };
   };
   proto.getComputedTextLength = function () {
     fresh();
-    return textLength(this);
+    return f32(textLength(this));
   };
   proto.getSubStringLength = function (start, count) {
     fresh();
@@ -925,7 +931,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
   }
   proto.getTotalLength = function () {
     try {
-      return new svgPathProperties(geometryPath(this)).getTotalLength();
+      return f32(new svgPathProperties(geometryPath(this)).getTotalLength());
     } catch {
       return 0;
     }
@@ -933,7 +939,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
   proto.getPointAtLength = function (len) {
     try {
       const p = new svgPathProperties(geometryPath(this)).getPointAtLength(len);
-      return { x: p.x, y: p.y };
+      return { x: f32(p.x), y: f32(p.y) };
     } catch {
       return { x: 0, y: 0 };
     }
