@@ -11,6 +11,7 @@ import { createCanvas } from "@napi-rs/canvas";
 import { svgPathBbox } from "svg-path-bbox";
 import { svgPathProperties } from "svg-path-properties";
 import * as cssom from "rrweb-cssom";
+import { segmentRun, emojiFont } from "./fonts.mjs";
 
 // ---------------------------------------------------------------------------
 // Matrix
@@ -134,22 +135,39 @@ function fontMetrics(font) {
   return m;
 }
 
-// Advance width plus ink extents of a run of text
+// Advance width plus ink extents of a run of text. Advances come from
+// shaping the run on the matched face (fonts.mjs), as Chromium's SVG text
+// does; ink extents and fallback glyphs are measured with Skia, each segment
+// with the font that will actually draw it.
+function skiaMeasure(text, fontStr) {
+  measureCtx.font = fontStr;
+  return measureCtx.measureText(text);
+}
+
 function measureRun(text, font) {
   const key = fontString(font) + "\u0000" + text;
   let m = widthCache.get(key);
-  if (m === undefined) {
-    measureCtx.font = fontString(font);
-    const t = measureCtx.measureText(text);
-    m = {
-      width: t.width,
-      inkLeft: -t.actualBoundingBoxLeft,
-      inkRight: t.actualBoundingBoxRight,
-      inkAscent: t.actualBoundingBoxAscent,
-      inkDescent: t.actualBoundingBoxDescent,
-    };
-    widthCache.set(key, m);
+  if (m !== undefined) return m;
+  const segments = segmentRun(text, font) ?? [{ kind: "fallback", text }];
+  const emoji = emojiFont();
+  let x = 0;
+  m = { width: 0, inkLeft: Infinity, inkRight: -Infinity, inkAscent: 0, inkDescent: 0 };
+  for (const seg of segments) {
+    const fontStr = seg.kind === "emoji" && emoji ? `${font.size}px "${emoji}"` : fontString(font);
+    const t = skiaMeasure(seg.text, fontStr);
+    const w = seg.width ?? t.width;
+    m.inkLeft = Math.min(m.inkLeft, x - t.actualBoundingBoxLeft);
+    // Right ink is the overhang past the last advance, anchored at the shaped
+    // end (Skia's own layout may be unkerned)
+    m.inkRight = Math.max(m.inkRight, x + w + (t.actualBoundingBoxRight - t.width));
+    m.inkAscent = Math.max(m.inkAscent, t.actualBoundingBoxAscent);
+    m.inkDescent = Math.max(m.inkDescent, t.actualBoundingBoxDescent);
+    x += w;
   }
+  m.width = x;
+  if (!Number.isFinite(m.inkLeft)) m.inkLeft = m.inkRight = 0;
+  if (widthCache.size > 50000) widthCache.clear();
+  widthCache.set(key, m);
   return m;
 }
 
@@ -165,7 +183,8 @@ const INHERITED = new Set([
   "dominant-baseline", "white-space", "visibility", "letter-spacing", "line-height",
 ]);
 const INITIAL = {
-  "font-size": "16px", "font-family": "sans-serif", "font-weight": "normal", "font-style": "normal",
+  // Chromium's default page font; SVG with no font rules inherits it
+  "font-size": "16px", "font-family": 'Times, "Times New Roman", serif', "font-weight": "normal", "font-style": "normal",
   "text-anchor": "start", "dominant-baseline": "auto", "alignment-baseline": "auto", display: "inline",
   visibility: "visible", "letter-spacing": "normal", "line-height": "normal", "white-space": "normal",
 };
@@ -206,6 +225,34 @@ function parseSheet(text) {
   sheetCache.set(text, rules);
   return rules;
 }
+
+// Parses a style attribute the way browsers do: empty declarations are
+// skipped, unknown (e.g. SVG-only) properties are kept. jsdom's parser drops
+// both "; font-weight: bold" and properties it doesn't know.
+const inlineCache = new Map();
+export function parseInlineStyle(text) {
+  let decls = inlineCache.get(text);
+  if (decls) return decls;
+  decls = new Map();
+  for (const part of text.split(";")) {
+    const i = part.indexOf(":");
+    if (i < 0) continue;
+    const name = part.slice(0, i).trim().toLowerCase();
+    let value = part.slice(i + 1).trim();
+    if (!name || !value) continue;
+    const important = /!\s*important\s*$/i.test(value);
+    if (important) value = value.replace(/!\s*important\s*$/i, "").trim();
+    decls.set(name, { value, important });
+  }
+  if (inlineCache.size > 10000) inlineCache.clear();
+  inlineCache.set(text, decls);
+  return decls;
+}
+function inlineStyle(el) {
+  const text = el.getAttribute && el.getAttribute("style");
+  return text ? parseInlineStyle(text) : EMPTY_MAP;
+}
+const EMPTY_MAP = new Map();
 
 // ---------------------------------------------------------------------------
 // The geometry engine bound to one jsdom window
@@ -259,8 +306,9 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
     if (!cache) caches.styles.set(el, (cache = new Map()));
     if (cache.has(prop)) return cache.get(prop);
     let value;
-    const inline = el.style?.getPropertyValue?.(prop);
-    const inlineImportant = inline && el.style.getPropertyPriority(prop) === "important";
+    const decl = inlineStyle(el).get(prop);
+    const inline = decl?.value;
+    const inlineImportant = !!decl?.important;
     let best = null;
     for (const rule of allRules()) {
       for (const [name, v, important] of rule.decls) {
@@ -319,10 +367,27 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
     return px === null || Number.isNaN(px) ? 16 : px;
   }
 
+  // Computed font-weight as a number; bolder/lighter resolve against the
+  // parent per the CSS Fonts 4 table
+  function weightOf(el) {
+    let v;
+    let e = el;
+    for (; e && e.nodeType === 1; e = e.parentNode) {
+      v = specified(e, "font-weight");
+      if (v !== undefined && v !== "") break;
+    }
+    if (v === undefined || v === "" || v === "normal") return 400;
+    if (v === "bold") return 700;
+    if (v === "bolder" || v === "lighter") {
+      const parent = e.parentNode && e.parentNode.nodeType === 1 ? weightOf(e.parentNode) : 400;
+      if (v === "bolder") return parent < 350 ? 400 : parent < 550 ? 700 : 900;
+      return parent < 550 ? 100 : parent < 750 ? 400 : 700;
+    }
+    return Number(v) || 400;
+  }
+
   function fontOf(el) {
-    let weight = computed(el, "font-weight");
-    if (weight === "normal") weight = "400";
-    else if (weight === "bold") weight = "700";
+    const weight = String(weightOf(el));
     return {
       size: computed(el, "font-size"),
       family: computed(el, "font-family"),
@@ -402,6 +467,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
     }
 
     function applyPending(el) {
+      st.positioned = pending.x !== undefined || pending.y !== undefined || pending.dx !== undefined || pending.dy !== undefined;
       if (pending.x !== undefined) {
         st.x = pending.x;
         chunk = { anchor: computed(pending.anchorEl, "text-anchor"), runs: [] };
@@ -436,7 +502,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
           st.emitted += text.length;
           const font = fontOf(el);
           const { ascent, descent } = fontMetrics(font);
-          const run = { x: st.x, y: st.y + baselineShift(el, font), text, font, owner: el, ascent, descent, ...measureRun(text, font) };
+          const run = { x: st.x, y: st.y + baselineShift(el, font), text, font, owner: el, ascent, descent, positioned: st.positioned, ...measureRun(text, font) };
           runs.push(run);
           chunk.runs.push(run);
           st.x += run.width;
@@ -448,6 +514,33 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
       if (st.emitted === emittedBefore) pending = saved;
     }
     walk(textEl);
+
+    // Chromium shapes across element and text-node boundaries when the font
+    // and baseline are unchanged (Mermaid builds labels one word per node), so
+    // kerning applies across them. Reshape such groups as one string and give
+    // each run its share via prefix widths.
+    for (let i = 0; i < runs.length; ) {
+      let j = i + 1;
+      while (j < runs.length && !runs[j].positioned && runs[j].y === runs[i].y && fontString(runs[j].font) === fontString(runs[i].font)) j++;
+      if (j - i > 1) {
+        let prefix = "", prev = 0;
+        const x0 = runs[i].x;
+        const originalEnd = runs[j - 1].x + runs[j - 1].width;
+        for (let k = i; k < j; k++) {
+          prefix += runs[k].text;
+          const total = measureRun(prefix, runs[i].font).width;
+          const overhang = runs[k].inkRight - runs[k].width;
+          runs[k].x = x0 + prev;
+          runs[k].width = total - prev;
+          runs[k].inkRight = runs[k].width + overhang;
+          prev = total;
+        }
+        // Positions after the group shift by the difference
+        const delta = x0 + prev - originalEnd;
+        for (let k = j; k < runs.length && !runs[k].positioned; k++) runs[k].x += delta;
+      }
+      i = j;
+    }
 
     // A trailing collapsible space takes no room
     const last = runs[runs.length - 1];
@@ -653,16 +746,17 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
 
   // Lays out one element; returns whether its bounds changed (Blink's
   // SVGLayoutResult::bounds_changed)
-  function layoutNode(el, pass) {
+  function layoutNode(el, pass, parentIsNew = false) {
     const kind = kindOf(el);
     let old = state.get(el);
-    // A layout object that missed the previous pass, or moved, is brand new
-    if (old && (old.pass !== pass - 1 || old.parent !== el.parentNode)) old = undefined;
+    // A layout object that missed the previous pass or moved is brand new, and
+    // so is everything under it (Blink rebuilds the whole subtree)
+    if (parentIsNew || (old && (old.pass !== pass - 1 || old.parent !== el.parentNode))) old = undefined;
     let box, valid, kids;
     if (kind === "container" || kind === "hidden") {
       kids = renderedChildren(el);
       let childChanged = false;
-      for (const c of kids) if (layoutNode(c, pass)) childChanged = true;
+      for (const c of kids) if (layoutNode(c, pass, !old)) childChanged = true;
       // Losing a child forces a recompute (bounds_dirty_from_removed_child_)
       if (old?.kids && old.kids.some((k) => !kids.includes(k))) childChanged = true;
       if (childChanged || !old) {
@@ -740,7 +834,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
   function localTransform(el) {
     if (el.localName === "svg" && el.parentNode && el.parentNode.namespaceURI === SVG_NS) return viewportTransform(el);
     let t = el.getAttribute("transform");
-    const css = el.style?.getPropertyValue?.("transform");
+    const css = inlineStyle(el).get("transform")?.value;
     if (css && css !== "none") t = css;
     return parseTransform(t);
   }
@@ -926,7 +1020,7 @@ export function createDom({ viewportWidth = 800, viewportHeight = 600 } = {}) {
     document,
     font: { fontMetrics, textWidth },
     cascade: { specified, computed, fresh },
-    internals: { ownBBox, layoutText, computed },
+    internals: { ownBBox, layoutText, computed, state, passes, outermostSvg, kindOf, renderedChildren },
   };
 }
 

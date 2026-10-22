@@ -31,6 +31,7 @@
     "@modelcontextprotocol/sdk": "^1.6.1",
     "@napi-rs/canvas": "^1.0.13",
     "@resvg/resvg-js": "^2.6.2",
+    "fontkit": "^2.0.4",
     "import-meta-resolve": "^4.1.0",
     "jsdom": "^26.1.0",
     "mermaid": "^12.2.0",

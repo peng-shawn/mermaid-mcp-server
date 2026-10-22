@@ -7,7 +7,7 @@
 // and writing the winning value of each property as an attribute produces an
 // SVG that renders the same everywhere.
 import { GlobalFonts } from "@napi-rs/canvas";
-import { createDom } from "./dom.mjs";
+import { createDom, parseInlineStyle } from "./dom.mjs";
 
 // Properties that SVG accepts as presentation attributes
 const PRESENTATION = new Set([
@@ -62,7 +62,8 @@ export function flattenSvg(svg) {
     for (const el of elements) {
       if (el.localName === "style") continue;
       const props = new Set(sheetProps);
-      for (let i = 0; i < (el.style?.length ?? 0); i++) props.add(el.style[i]);
+      const inline = parseInlineStyle(el.getAttribute("style") || "");
+      for (const name of inline.keys()) props.add(name);
       const out = {};
       for (const prop of props) {
         if (!PRESENTATION.has(prop)) continue;
@@ -72,7 +73,7 @@ export function flattenSvg(svg) {
         if (prop === "font-weight") v = resolveWeight(cascade, el, v);
         if (prop === "font-family") v = canonicalFamilies(v);
         if (COLOR_PROPS.includes(prop) && /currentcolor/i.test(v)) v = resolveVars(cascade, el, String(cascade.computed(el, "color") ?? "black"));
-        if (prop === "transform" && el.hasAttribute("transform") && !el.style?.getPropertyValue("transform")) continue;
+        if (prop === "transform" && el.hasAttribute("transform") && !inline.has("transform")) continue;
         out[prop] = v;
       }
       writes.push([el, out]);
