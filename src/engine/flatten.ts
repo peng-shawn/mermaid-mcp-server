@@ -120,6 +120,7 @@ export function flattenSvg(dom: GeometryDom, markup: string, options: FlattenOpt
       el.removeAttribute("style");
     }
     for (const style of Array.from(root.querySelectorAll("style"))) style.remove();
+    shadowsToFilters(dom, root);
 
     // Give the root a concrete size (Mermaid emits width="100%" and a
     // max-width style, which only mean something inside a web page)
@@ -148,3 +149,80 @@ function declaredProperties(root: Element): Set<string> {
   }
   return props;
 }
+
+// CSS drop-shadow() filter functions become SVG 1.1 <filter> elements: many
+// SVG tools don't read CSS filter functions, and a filter region sized to the
+// element (from our own getBBox) rasterizes about 3x faster than the default
+// region on large diagrams, where Mermaid shadows every node.
+const DROP_SHADOW = /drop-shadow\(([^()]*(?:\([^()]*\))?[^()]*)\)/g;
+
+function shadowsToFilters(dom: GeometryDom, root: Element): void {
+  const { document } = dom;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  let defs: Element | null = null;
+  let n = 0;
+  // Measure every box before changing anything: each change would make the
+  // next getBBox re-run layout
+  const work: Array<{ el: Element; shadows: ReturnType<typeof parseShadow>[]; box: DOMRect }> = [];
+  for (const el of Array.from(root.querySelectorAll("[filter]"))) {
+    const value = el.getAttribute("filter")!;
+    const shadows = [...value.matchAll(DROP_SHADOW)].map((m) => parseShadow(m[1]));
+    if (!shadows.length || shadows.some((sh) => !sh) || value.replace(DROP_SHADOW, "").trim()) continue;
+    work.push({ el, shadows, box: (el as SVGGraphicsElement).getBBox() });
+  }
+  for (const { el, shadows, box } of work) {
+    if (!(box.width > 0 || box.height > 0)) {
+      // Nothing to shadow
+      el.removeAttribute("filter");
+      continue;
+    }
+    const stroke = parseFloat(el.getAttribute("stroke-width") ?? "1") || 1;
+    const pad = Math.max(...shadows.map((sh) => 3 * sh!.blur / 2 + Math.max(Math.abs(sh!.dx), Math.abs(sh!.dy)))) + stroke + 1;
+    const filter = document.createElementNS(SVG_NS, "filter");
+    const id = `drop-shadow-${n++}`;
+    for (const [k, v] of Object.entries({ id, filterUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB", x: box.x - pad, y: box.y - pad, width: box.width + 2 * pad, height: box.height + 2 * pad })) filter.setAttribute(k, String(v));
+    // Shadows paint under the source in order, the last listed lowest
+    const merge = document.createElementNS(SVG_NS, "feMerge");
+    shadows.reverse().forEach((sh, i) => {
+      const prim = (tag: string, attrs: Record<string, string | number>) => {
+        const e = document.createElementNS(SVG_NS, tag);
+        for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+        filter.appendChild(e);
+      };
+      prim("feGaussianBlur", { in: "SourceAlpha", stdDeviation: sh!.blur / 2, result: `blur${i}` });
+      prim("feOffset", { in: `blur${i}`, dx: sh!.dx, dy: sh!.dy, result: `offset${i}` });
+      prim("feFlood", { "flood-color": sh!.color.hex, "flood-opacity": sh!.color.alpha, result: `color${i}` });
+      prim("feComposite", { in: `color${i}`, in2: `offset${i}`, operator: "in", result: `shadow${i}` });
+      const node = document.createElementNS(SVG_NS, "feMergeNode");
+      node.setAttribute("in", `shadow${i}`);
+      merge.appendChild(node);
+    });
+    const source = document.createElementNS(SVG_NS, "feMergeNode");
+    source.setAttribute("in", "SourceGraphic");
+    merge.appendChild(source);
+    filter.appendChild(merge);
+    if (!defs) {
+      defs = document.createElementNS(SVG_NS, "defs");
+      root.insertBefore(defs, root.firstChild);
+    }
+    defs.appendChild(filter);
+    el.setAttribute("filter", `url(#${id})`);
+  }
+}
+
+// "<dx> <dy> [<blur>] [<color>]", color anywhere; lengths in px
+function parseShadow(text: string): { dx: number; dy: number; blur: number; color: { hex: string; alpha: number } } | null {
+  const colorMatch = /(?:rgba?|hsla?)\([^)]*\)|#[0-9a-f]{3,8}\b|\b[a-z]+\b(?![\d.])/i.exec(text.replace(/[\d.]+px/g, (m) => m.replace("px", "")));
+  let rest = text;
+  let color = { hex: "#000000", alpha: 1 };
+  if (colorMatch) {
+    const parsed = parseColor(colorMatch[0]);
+    if (parsed) color = parsed;
+    else if (/^[a-z]+$/i.test(colorMatch[0])) color = { hex: colorMatch[0], alpha: 1 };
+    rest = text.replace(colorMatch[0], " ");
+  }
+  const lengths = rest.trim().split(/\s+/).filter(Boolean).map((t) => parseFloat(t));
+  if (lengths.length < 2 || lengths.some((l) => Number.isNaN(l))) return null;
+  return { dx: lengths[0], dy: lengths[1], blur: lengths[2] ?? 0, color };
+}
+
