@@ -27,10 +27,17 @@ const only = opt("only");
 const refresh = args.includes("--refresh-oracle");
 const jsonOut = opt("json");
 
-// Known differences that are not geometry: venn seeds its layout optimizer
-// with Math.random, and jsdom and Chromium draw a different number of random
-// values before it runs, so each finds a different (equally valid) optimum.
-const NONDETERMINISTIC = new Set(["venn-04"]);
+// Known differences, each with its reason. A known case still prints, but
+// doesn't fail the run; anything else outside 1px does.
+const KNOWN = new Map([
+  // venn seeds its layout optimizer with Math.random, and jsdom and Chromium
+  // draw a different number of random values first: each finds a different,
+  // equally valid optimum
+  ["venn-04", "randomized layout"],
+  // Linux Chromium sizes getBoundingClientRect of a <tspan> differently from
+  // macOS (and from the engine); a 2px offset on one axis label
+  ...(process.platform === "linux" ? [["xyChart-07", "Linux tspan getBoundingClientRect"]] : []),
+]);
 
 const FROZEN_CLOCK = `(() => {
   if (globalThis.__realDate) return;
@@ -175,7 +182,7 @@ const summary = {
 };
 for (const r of rows.filter((r) => r.status !== "ok" || !r.close)) {
   if (r.status === "reference-error") continue;
-  console.log(`${r.name.padEnd(28)} ${r.status === "ok" ? `max ${r.max.toFixed(2)}px  ${r.worst}` : `${r.status} ${r.detail ?? ""}`}${NONDETERMINISTIC.has(r.name) ? "  (known nondeterministic)" : ""}`);
+  console.log(`${r.name.padEnd(28)} ${r.status === "ok" ? `max ${r.max.toFixed(2)}px  ${r.worst}` : `${r.status} ${r.detail ?? ""}`}${KNOWN.has(r.name) ? `  (known: ${KNOWN.get(r.name)})` : ""}`);
 }
 console.log(
   `\n${summary.diagrams} diagrams (Mermaid ${summary.mermaid}): ${summary.structurallyIdentical} structurally identical, ` +
@@ -184,5 +191,5 @@ console.log(
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify({ summary, rows }, null, 2));
 
 // Gate: everything structurally identical and within 1px, except known cases
-const failures = scored.filter((r) => !NONDETERMINISTIC.has(r.name) && !(r.status === "ok" && r.close));
+const failures = scored.filter((r) => !KNOWN.has(r.name) && !(r.status === "ok" && r.close));
 process.exit(failures.length ? 1 : 0);
