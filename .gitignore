@@ -1,3 +1,6 @@
 node_modules
 dist
 .cursor/*
+experiments/browserless/out/
+test/accuracy/.oracle/
+test/accuracy/.pixels/

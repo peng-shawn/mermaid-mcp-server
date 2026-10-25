@@ -1,12 +1,15 @@
 {
   "name": "@peng-shawn/mermaid-mcp-server",
-  "version": "0.3.0",
-  "description": "A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images",
+  "version": "1.0.0-beta.0",
+  "description": "MCP server that renders Mermaid diagrams to PNG and SVG with the official Mermaid library, no browser required",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs",
+    "accuracy": "npm run build && node test/accuracy/run.mjs",
+    "bench": "npm run build && node bench/e2e.mjs",
     "release": "scripts/release.sh"
   },
   "bin": {
@@ -14,6 +17,7 @@
   },
   "files": [
     "dist",
+    "assets",
     "README.md",
     "LICENSE"
   ],
@@ -23,18 +27,33 @@
     "mcp",
     "model-context-protocol",
     "ai",
-    "visualization"
+    "visualization",
+    "svg",
+    "png",
+    "no-browser"
   ],
   "author": "Shawn Peng",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.6.1",
-    "import-meta-resolve": "^4.1.0",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@napi-rs/canvas": "^1.0.13",
+    "@resvg/resvg-js": "^2.6.2",
+    "fontkit": "^2.0.4",
+    "jsdom": "^26.1.0",
     "mermaid": "^12.2.0",
-    "puppeteer": "^25.15.0"
+    "rrweb-cssom": "^0.8.0",
+    "svg-path-bbox": "^2.1.0",
+    "svg-path-properties": "^2.2.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@types/fontkit": "^2.0.9",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.13.9",
+    "pixelmatch": "^8.0.0",
+    "pngjs": "^7.0.0",
+    "puppeteer": "^25.15.0",
     "typescript": "^5.8.2"
   },
   "engines": {

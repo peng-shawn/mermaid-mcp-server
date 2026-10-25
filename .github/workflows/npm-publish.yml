@@ -26,11 +26,15 @@ jobs:
       - name: Update npm
         run: npm install -g npm@^11.5.1
 
+      # Install scripts would make the Puppeteer dev dependency download Chrome
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: node --test --test-concurrency=1 test/engine.test.mjs test/server.test.mjs
 
       - name: Stage publish to npm
         # Authenticates via npm trusted publishing; no token needed.

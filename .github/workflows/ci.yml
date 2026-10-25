@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly: catch drift from new Mermaid releases
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # Install scripts would make the Puppeteer dev dependency download Chrome,
+      # which only the accuracy job needs
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: node --test --test-concurrency=1 test/engine.test.mjs test/server.test.mjs
+
+  accuracy:
+    # Renders Mermaid's documentation examples in Chromium and with the
+    # browserless engine and compares them. Informational until Linux font
+    # parity is established on the runners.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # The fonts the Linux baseline was measured with
+      - run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core fonts-liberation
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chrome's sandbox
+      # needs; allow them rather than running Chrome without a sandbox
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/cache@v4
+        with:
+          path: test/accuracy/.oracle
+          key: oracle-${{ runner.os }}-${{ hashFiles('package-lock.json', 'test/accuracy/corpus-*') }}
+      - run: node test/accuracy/run.mjs --corpus all --json accuracy.json
+      - run: node test/accuracy/pixels.mjs --corpus all
+        if: always()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: accuracy-report
+          path: |
+            accuracy.json
+            test/accuracy/.pixels
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: docker build -t mermaid-mcp:test .
+      - run: node test/docker-smoke.mjs mermaid-mcp:test
