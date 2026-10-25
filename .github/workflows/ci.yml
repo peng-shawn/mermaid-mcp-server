@@ -44,6 +44,9 @@ jobs:
           cache: npm
       # The fonts the Linux baseline was measured with
       - run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core fonts-liberation
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chrome's sandbox
+      # needs; allow them rather than running Chrome without a sandbox
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build
       - uses: actions/cache@v4
