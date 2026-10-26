@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/peng-shawn-mermaid-mcp-server-badge.png)](https://mseep.ai/app/peng-shawn-mermaid-mcp-server)
+
 # Mermaid MCP Server
 
 A Model Context Protocol (MCP) server that converts Mermaid diagrams to PNG images or SVG files. This server allows AI assistants and other applications to generate visual diagrams from textual descriptions using the Mermaid markdown syntax.
